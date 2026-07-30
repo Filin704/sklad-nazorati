@@ -60,10 +60,11 @@ app.get('/api/kv', (req, res) => {
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
 // --- Static frontend ------------------------------------------------------
+// index.html lives in the same folder as this server file.
 
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(__dirname));
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 const PORT = process.env.PORT || 3000;
