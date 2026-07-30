@@ -1,66 +1,120 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const { MongoClient } = require('mongodb');
 
 const app = express();
 app.use(express.json({ limit: '15mb' }));
 
-// --- Simple JSON-file key-value store ---------------------------------
-// NOTE: Render's free web service disk is EPHEMERAL — it can be wiped on
-// redeploys or restarts. For data that must survive long-term, swap this
-// out for a real database (see README.md for options). This file-based
-// store is fine for getting started and for low-risk / test use.
+// --- Storage layer ---------------------------------------------------------
+// If MONGODB_URI is set (Render Environment Variable), all data is stored
+// permanently in MongoDB Atlas and survives redeploys/restarts.
+// If it's NOT set, we fall back to a simple JSON file so local testing still
+// works — but that file is wiped on every Render redeploy/restart (ephemeral disk).
+
+const MONGODB_URI = process.env.MONGODB_URI;
+let collection = null;
 
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'store.json');
 
-function loadStore() {
-  try {
-    return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-  } catch (e) {
-    return {};
-  }
+function loadFileStore() {
+  try { return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); }
+  catch (e) { return {}; }
 }
-
-function saveStore(store) {
+function saveFileStore(store) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.writeFileSync(DATA_FILE, JSON.stringify(store));
+}
+function escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function initDb() {
+  if (!MONGODB_URI) {
+    console.log('MONGODB_URI не задан — используется временное файловое хранилище (данные будут теряться при перезапуске).');
+    return;
+  }
+  const client = new MongoClient(MONGODB_URI);
+  await client.connect();
+  const db = client.db('sklad_nazorati');
+  collection = db.collection('kv');
+  console.log('Подключено к MongoDB Atlas — данные сохраняются постоянно.');
+}
+
+async function kvGet(key) {
+  if (collection) {
+    const doc = await collection.findOne({ _id: key });
+    return doc ? doc.value : undefined;
+  }
+  return loadFileStore()[key];
+}
+
+async function kvSet(key, value) {
+  if (collection) {
+    await collection.updateOne({ _id: key }, { $set: { value } }, { upsert: true });
+    return;
+  }
+  const store = loadFileStore();
+  store[key] = value;
+  saveFileStore(store);
+}
+
+async function kvDelete(key) {
+  if (collection) {
+    await collection.deleteOne({ _id: key });
+    return;
+  }
+  const store = loadFileStore();
+  delete store[key];
+  saveFileStore(store);
+}
+
+async function kvListKeys(prefix) {
+  if (collection) {
+    const docs = await collection
+      .find({ _id: { $regex: '^' + escapeRegex(prefix) } }, { projection: { _id: 1 } })
+      .toArray();
+    return docs.map(d => d._id);
+  }
+  const store = loadFileStore();
+  return Object.keys(store).filter(k => k.startsWith(prefix));
 }
 
 // --- API ----------------------------------------------------------------
 
-app.get('/api/kv/:key', (req, res) => {
-  const store = loadStore();
-  const key = req.params.key;
-  if (!(key in store)) return res.status(404).json({ error: 'not found' });
-  res.json({ key, value: store[key] });
+app.get('/api/kv/:key', async (req, res) => {
+  try {
+    const value = await kvGet(req.params.key);
+    if (value === undefined) return res.status(404).json({ error: 'not found' });
+    res.json({ key: req.params.key, value });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put('/api/kv/:key', (req, res) => {
-  const store = loadStore();
-  store[req.params.key] = req.body.value;
-  saveStore(store);
-  res.json({ key: req.params.key, value: req.body.value });
+app.put('/api/kv/:key', async (req, res) => {
+  try {
+    await kvSet(req.params.key, req.body.value);
+    res.json({ key: req.params.key, value: req.body.value });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.delete('/api/kv/:key', (req, res) => {
-  const store = loadStore();
-  delete store[req.params.key];
-  saveStore(store);
-  res.json({ key: req.params.key, deleted: true });
+app.delete('/api/kv/:key', async (req, res) => {
+  try {
+    await kvDelete(req.params.key);
+    res.json({ key: req.params.key, deleted: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/kv', (req, res) => {
-  const store = loadStore();
-  const prefix = req.query.prefix || '';
-  const keys = Object.keys(store).filter(k => k.startsWith(prefix));
-  res.json({ keys });
+app.get('/api/kv', async (req, res) => {
+  try {
+    const keys = await kvListKeys(req.query.prefix || '');
+    res.json({ keys });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/health', (req, res) => res.json({ ok: true }));
+app.get('/api/health', (req, res) => res.json({ ok: true, db: !!collection }));
 
 // --- Static frontend ------------------------------------------------------
-// index.html lives in the same folder as this server file.
 
 app.use(express.static(__dirname));
 app.get('*', (req, res) => {
@@ -68,6 +122,12 @@ app.get('*', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log('Сервер запущен: http://localhost:' + PORT);
-});
+
+initDb()
+  .then(() => {
+    app.listen(PORT, () => console.log('Сервер запущен: http://localhost:' + PORT));
+  })
+  .catch(err => {
+    console.error('Не удалось подключиться к MongoDB, запускаю без базы:', err.message);
+    app.listen(PORT, () => console.log('Сервер запущен (без базы): http://localhost:' + PORT));
+  });
