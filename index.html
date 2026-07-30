@@ -224,6 +224,13 @@ const storage = {
 
 const BRANDS_KEY = "brands_list";
 const GLOBAL_STOCK_KEY = "stock__GLOBAL_MIXED";
+const IGNORED_KEY = "ignored_artikuls";
+
+async function getIgnoredList(){
+  try{ const res = await storage.get(IGNORED_KEY); return res ? JSON.parse(res.value) : {}; }
+  catch(e){ return {}; }
+}
+async function saveIgnoredList(data){ await storage.set(IGNORED_KEY, JSON.stringify(data)); }
 let brands = [];
 let activePage = "home"; // "home" or a brand name
 let activeBrandTab = "status";
@@ -350,6 +357,16 @@ async function renderHome(){
     </div>
 
     <div class="panel">
+      <h3>Поиск по артикулу</h3>
+      <p class="hint">Найдите любой артикул, чтобы посмотреть, к какому бренду он привязан, изменить минимальное количество, переназначить бренд или пометить деталь как ненужную (тогда она перестанет отслеживаться и больше не будет появляться в списке «Не определено»).</p>
+      <div class="assign-form" style="margin-bottom:0;">
+        <div><input type="text" id="artikulSearchInput" placeholder="Введите артикул полностью или частично..."></div>
+        <button class="btn secondary small" id="artikulSearchBtn">Найти</button>
+      </div>
+      <div id="artikulSearchResults"></div>
+    </div>
+
+    <div class="panel">
       <h3>Загрузка ежедневной базы (все бренды вместе)</h3>
       <p class="hint">Загрузите Excel (.xlsx, .xls) или CSV файл с остатками по всем брендам сразу — вперемешку. Система сама распределит позиции по брендам на основе артикула, используя список минимальных количеств, который вы задали для каждого бренда.</p>
       <div class="dropzone" id="dropzone">
@@ -363,6 +380,11 @@ async function renderHome(){
     <div id="homeResults"></div>
   `;
 
+  const searchBtn = document.getElementById("artikulSearchBtn");
+  const searchInput = document.getElementById("artikulSearchInput");
+  searchBtn.onclick = () => searchArtikul(searchInput.value.trim());
+  searchInput.onkeydown = (e) => { if(e.key === "Enter") searchArtikul(searchInput.value.trim()); };
+
   const dz = document.getElementById("dropzone");
   const fi = document.getElementById("fileInput");
   dz.onclick = () => fi.click();
@@ -372,6 +394,163 @@ async function renderHome(){
   fi.onchange = (e) => { if(e.target.files[0]) handleFile(e.target.files[0]); };
 
   if(stock) await renderHomeResults(stock);
+}
+
+// Searches: (1) the global ignore list, (2) every brand's threshold registry
+// (an artikul can legitimately be registered under several brands), and
+// (3) the latest uploaded stock snapshot (for reference quantity).
+async function searchArtikul(query){
+  const resultsEl = document.getElementById("artikulSearchResults");
+  if(!query){ resultsEl.innerHTML = ""; return; }
+  const nq = normKey(query);
+
+  const ignoredList = await getIgnoredList();
+  const ignoredHit = Object.keys(ignoredList).find(k => k.includes(nq)) || null;
+
+  const matches = []; // { brand, artikul, name, minQty }
+  for(const b of brands){
+    const th = await getThresholds(b);
+    Object.keys(th).forEach(art => {
+      if(normKey(art).includes(nq)){
+        matches.push({ brand: b, artikul: art, name: th[art].name, minQty: th[art].minQty });
+      }
+    });
+  }
+
+  const stock = await getGlobalStock();
+  let stockItem = null;
+  if(stock) stockItem = stock.items.find(it => normKey(it.artikul).includes(nq));
+
+  if(!ignoredHit && matches.length === 0){
+    resultsEl.innerHTML = `
+      <div class="warn-banner" style="margin-top:12px;">
+        ⚠️ Артикул «${esc(query)}» пока нигде не зарегистрирован${stockItem ? ` (в последней базе есть: ${esc(stockItem.artikul)}, кол-во ${stockItem.qty})` : ""}.
+      </div>
+      <div class="assign-form">
+        <div>
+          <label>Артикул</label>
+          <input type="text" id="newArtArtikul" value="${esc(stockItem ? stockItem.artikul : query)}">
+        </div>
+        <div>
+          <label>Наименование</label>
+          <input type="text" id="newArtName" value="${esc(stockItem ? stockItem.name : '')}">
+        </div>
+        <div style="flex:2;">
+          <label>Бренды (можно несколько)</label>
+          <div class="brand-chip-row">${brands.map(b=>`<label class="brand-chip"><input type="checkbox" class="new-art-brand" value="${esc(b)}"> ${esc(b)}</label>`).join("")}</div>
+        </div>
+        <div style="max-width:110px;">
+          <label>Минимум</label>
+          <input type="number" id="newArtMin" min="0" value="1">
+        </div>
+        <div>
+          <label>&nbsp;</label>
+          <label class="brand-chip"><input type="checkbox" id="newArtIgnore"> Не нужен (не отслеживать)</label>
+        </div>
+        <button class="btn small" id="newArtSaveBtn">Сохранить</button>
+      </div>
+    `;
+    document.getElementById("newArtSaveBtn").onclick = async () => {
+      const artikul = document.getElementById("newArtArtikul").value.trim();
+      const name = document.getElementById("newArtName").value.trim();
+      const minQty = parseFloat(document.getElementById("newArtMin").value) || 0;
+      const ignore = document.getElementById("newArtIgnore").checked;
+      if(!artikul){ showToast("Введите артикул.", "warning"); return; }
+      if(ignore){
+        const list = await getIgnoredList();
+        list[normKey(artikul)] = { artikul, name };
+        await saveIgnoredList(list);
+        showToast("Артикул помечен как ненужный.", "success");
+      } else {
+        const chosenBrands = Array.from(document.querySelectorAll(".new-art-brand:checked")).map(c => c.value);
+        if(chosenBrands.length === 0){ showToast("Выберите хотя бы один бренд или отметьте «Не нужен».", "warning"); return; }
+        for(const brand of chosenBrands){
+          const th = await getThresholds(brand);
+          th[artikul] = { name, minQty };
+          await saveThresholds(brand, th);
+        }
+        showToast("Сохранено.", "success");
+      }
+      searchArtikul(query);
+      renderAll();
+    };
+    return;
+  }
+
+  let html = "";
+
+  if(ignoredHit){
+    const info = ignoredList[ignoredHit];
+    html += `
+      <div class="warn-banner" style="margin-top:12px;">
+        🚫 Артикул «${esc(info.artikul)}»${info.name ? " (" + esc(info.name) + ")" : ""} помечен как <b>ненужный</b> и не отслеживается.
+        <button class="btn secondary small" id="unignoreBtn" style="margin-left:auto;">Вернуть в отслеживание</button>
+      </div>
+    `;
+  }
+
+  if(matches.length > 0){
+    html += `
+      <div style="max-height:320px; overflow-y:auto; margin-top:12px;">
+      <table>
+        <thead><tr><th>Бренд</th><th>Артикул</th><th>Наименование</th><th style="width:110px;">Минимум</th><th>Тек. кол-во</th><th style="width:170px;"></th></tr></thead>
+        <tbody>
+          ${matches.map((m,idx) => {
+            const stockM = stock ? stock.items.find(it => normKey(it.artikul) === normKey(m.artikul)) : null;
+            return `
+            <tr data-idx="${idx}">
+              <td>${esc(m.brand)}</td>
+              <td class="mono">${esc(m.artikul)}</td>
+              <td><input type="text" class="edit-name" value="${esc(m.name || '')}"></td>
+              <td><input type="number" class="edit-min" min="0" value="${m.minQty}"></td>
+              <td class="mono">${stockM ? stockM.qty : "—"}</td>
+              <td>
+                <button class="btn small edit-save-btn">Сохранить</button>
+                <button class="btn danger-outline edit-del-btn">Удалить</button>
+              </td>
+            </tr>`;
+          }).join("")}
+        </tbody>
+      </table>
+      </div>
+    `;
+  }
+
+  resultsEl.innerHTML = html;
+
+  const unignoreBtn = document.getElementById("unignoreBtn");
+  if(unignoreBtn){
+    unignoreBtn.onclick = async () => {
+      const list = await getIgnoredList();
+      delete list[ignoredHit];
+      await saveIgnoredList(list);
+      showToast("Возвращено в отслеживание.", "success");
+      searchArtikul(query);
+      renderAll();
+    };
+  }
+
+  resultsEl.querySelectorAll("tr[data-idx]").forEach(tr => {
+    const idx = tr.dataset.idx;
+    const m = matches[idx];
+    tr.querySelector(".edit-save-btn").onclick = async () => {
+      const name = tr.querySelector(".edit-name").value.trim();
+      const minQty = parseFloat(tr.querySelector(".edit-min").value) || 0;
+      const th = await getThresholds(m.brand);
+      th[m.artikul] = { name, minQty };
+      await saveThresholds(m.brand, th);
+      showToast("Изменения сохранены.", "success");
+      renderAll();
+    };
+    tr.querySelector(".edit-del-btn").onclick = async () => {
+      const th = await getThresholds(m.brand);
+      delete th[m.artikul];
+      await saveThresholds(m.brand, th);
+      showToast("Удалено из бренда «" + m.brand + "».", "success");
+      searchArtikul(query);
+      renderAll();
+    };
+  });
 }
 
 function handleFile(file){
@@ -545,6 +724,7 @@ async function processColumns(aIdx, qIdx, nIdx){
 async function renderHomeResults(stock){
   const container = document.getElementById("homeResults");
   const map = await buildArtikulMap();
+  const ignoredList = await getIgnoredList();
 
   const brandGroups = {};
   brands.forEach(b => brandGroups[b] = []);
@@ -554,6 +734,8 @@ async function renderHomeResults(stock){
     const hits = map[normKey(it.artikul)] || [];
     if(hits.length > 0){
       hits.forEach(hit => brandGroups[hit.brand].push({...it, minQty: hit.minQty, registeredName: hit.name}));
+    } else if(ignoredList[normKey(it.artikul)]){
+      // deliberately marked as "not needed" — skip entirely, don't ask about it again
     } else {
       unclassified.push(it);
     }
@@ -609,6 +791,7 @@ async function renderHomeResults(stock){
             <th style="width:30px;"><input type="checkbox" id="unclSelectAll"></th>
             <th>Артикул</th><th>Наименование</th><th>Кол-во</th>
             <th style="width:220px;">Бренды (можно несколько)</th><th style="width:100px;">Минимум</th>
+            <th style="width:90px;">Не нужен</th>
           </tr></thead>
           <tbody id="unclBody">
             ${unclassified.map((it,idx) => `
@@ -623,6 +806,7 @@ async function renderHomeResults(stock){
                   </div>
                 </td>
                 <td><input type="number" class="min-select" data-idx="${idx}" min="0" value="1"></td>
+                <td style="text-align:center;"><input type="checkbox" class="row-ignore-opt" data-idx="${idx}" title="Эта деталь не нужна ни одному складу — исключить из отслеживания"></td>
               </tr>
             `).join("")}
           </tbody>
@@ -678,26 +862,34 @@ async function renderHomeResults(stock){
 
     document.getElementById("saveAllUnclBtn").onclick = async () => {
       const updates = {}; // brand -> {artikul: {name, minQty}}
-      let count = 0;
+      const ignoredList = await getIgnoredList();
+      let count = 0, ignoredCount = 0;
       document.querySelectorAll("#unclBody tr").forEach(tr => {
         const idx = tr.dataset.idx;
+        const item = unclassified[idx];
+        const isIgnored = tr.querySelector(".row-ignore-opt").checked;
+        if(isIgnored){
+          ignoredList[normKey(item.artikul)] = { artikul: item.artikul, name: item.name || "" };
+          ignoredCount++;
+          return;
+        }
         const chosenBrands = Array.from(tr.querySelectorAll(".row-brand-opt:checked")).map(c => c.value);
         const minQty = parseFloat(tr.querySelector(".min-select").value);
         if(chosenBrands.length === 0) return;
-        const item = unclassified[idx];
         chosenBrands.forEach(brand => {
           if(!updates[brand]) updates[brand] = {};
           updates[brand][item.artikul] = { name: item.name || "", minQty: isNaN(minQty) ? 0 : minQty };
         });
         count++;
       });
-      if(count === 0){ showToast("Ни одна строка не размечена брендом.", "warning"); return; }
+      if(count === 0 && ignoredCount === 0){ showToast("Ни одна строка не размечена.", "warning"); return; }
       for(const brand of Object.keys(updates)){
         const th = await getThresholds(brand);
         Object.assign(th, updates[brand]);
         await saveThresholds(brand, th);
       }
-      showToast(count + " артикулов распределено по брендам.", "success");
+      if(ignoredCount > 0) await saveIgnoredList(ignoredList);
+      showToast(count + " артикулов распределено по брендам" + (ignoredCount > 0 ? ", " + ignoredCount + " помечено как ненужные" : "") + ".", "success");
       renderAll();
     };
   }
