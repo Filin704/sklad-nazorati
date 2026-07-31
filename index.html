@@ -719,8 +719,51 @@ function detectColumns(headers){
   return { artIdx, qtyIdx, nameIdx };
 }
 
+// Checks how many of the first N rows in this column actually contain a number.
+// Used to sanity-check a keyword-matched column against the real data, since
+// merged/duplicated header labels can sometimes point the keyword match at a
+// column that is actually empty in the data rows.
+function columnNumericScore(rows, idx, sampleSize){
+  if(idx < 0 || !rows) return 0;
+  sampleSize = sampleSize || 40;
+  let score = 0;
+  const n = Math.min(rows.length, sampleSize);
+  for(let i = 0; i < n; i++){
+    const s = String(rows[i][idx] === undefined ? "" : rows[i][idx]).trim();
+    if(s !== "" && /\d/.test(s)) score++;
+  }
+  return score;
+}
+
+// Finds the column (excluding the given indices) with the most numeric-looking
+// values across the sample rows — used as a fallback when the keyword-matched
+// quantity column turns out to be empty in the actual data.
+function findBestNumericColumn(rows, colCount, excludeIdx){
+  let best = -1, bestScore = 0;
+  for(let c = 0; c < colCount; c++){
+    if(excludeIdx.includes(c)) continue;
+    const score = columnNumericScore(rows, c);
+    if(score > bestScore){ bestScore = score; best = c; }
+  }
+  return best;
+}
+
+// Runs keyword-based detection, then validates the Количество column against
+// the real data (not just its header text) and falls back to the column that
+// actually contains numbers if the keyword match was empty.
+function detectColumnsWithData(headers, rows){
+  const d = detectColumns(headers);
+  const qtyScore = columnNumericScore(rows, d.qtyIdx);
+  if(d.qtyIdx < 0 || qtyScore === 0){
+    const colCount = headers.length;
+    const fallback = findBestNumericColumn(rows, colCount, [d.artIdx, d.nameIdx]);
+    if(fallback >= 0) d.qtyIdx = fallback;
+  }
+  return d;
+}
+
 function autoDetectAndProcess(){
-  const d = detectColumns(parsedHeaders);
+  const d = detectColumnsWithData(parsedHeaders, parsedRows);
 
   if(d.artIdx >= 0 && d.qtyIdx >= 0){
     processColumns(d.artIdx, d.qtyIdx, d.nameIdx);
@@ -745,7 +788,7 @@ function renderColumnMap(){
   }
   const mapArea = document.getElementById("mapArea");
   const opts = parsedHeaders.map((h,i) => `<option value="${i}">${esc(h || "(столбец " + (i+1) + ")")}</option>`).join("");
-  const d = detectColumns(parsedHeaders);
+  const d = detectColumnsWithData(parsedHeaders, parsedRows);
 
   mapArea.innerHTML = `
     <div class="col-map">
