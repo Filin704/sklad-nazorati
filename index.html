@@ -1092,6 +1092,17 @@ async function renderBrandStatus(brand, stock){
     banner = `<div class="ok-banner">✅ Все отслеживаемые позиции в норме.</div>`;
   }
 
+  const exportPanel = `
+    <div class="panel">
+      <h3>Экспорт в Excel</h3>
+      <p class="hint">Скачайте текущее состояние склада по бренду «${esc(brand)}» в виде Excel-файла — например, чтобы отправить коллегам или распечатать.</p>
+      <div class="btn-row" style="margin-top:0;">
+        <button class="btn secondary" id="exportStockBtn">📥 Скачать базу склада (Excel)</button>
+        <button class="btn secondary" id="exportShortageBtn">📥 Скачать список нехватки (Excel)</button>
+      </div>
+    </div>
+  `;
+
   let shortageTable = "";
   if(shortages.length > 0){
     shortageTable = `
@@ -1122,7 +1133,7 @@ async function renderBrandStatus(brand, stock){
     `;
   }
 
-  el.innerHTML = banner + shortageTable + `
+  el.innerHTML = banner + exportPanel + shortageTable + `
     <div class="panel">
       <h3>Полный список отслеживаемых позиций</h3>
       <p class="hint">Всего под контролем: ${items.length}</p>
@@ -1150,6 +1161,53 @@ async function renderBrandStatus(brand, stock){
     const q = e.target.value.toLowerCase().trim();
     document.querySelectorAll("#fullBody tr").forEach(tr => { if(tr.dataset.search) tr.style.display = tr.dataset.search.includes(q) ? "" : "none"; });
   };
+
+  const exportStockBtn = document.getElementById("exportStockBtn");
+  const exportShortageBtn = document.getElementById("exportShortageBtn");
+  if(exportStockBtn) exportStockBtn.onclick = () => exportBrandStock(brand, items);
+  if(exportShortageBtn) exportShortageBtn.onclick = () => exportBrandShortages(brand, shortages);
+}
+
+// Sanitizes a brand name for safe use in a downloaded filename.
+function sanitizeFilename(s){
+  return String(s).replace(/[^\wа-яА-ЯёЁ\-]+/gi, "_");
+}
+
+// Exports the brand's full tracked stock list to an .xlsx file, downloaded directly
+// in the browser (no server involved) using the SheetJS library already loaded on the page.
+function exportBrandStock(brand, items){
+  if(!items || items.length === 0){ showToast("Нет данных для экспорта — список пуст.", "warning"); return; }
+  const data = items.map(it => ({
+    "Артикул": it.artikul,
+    "Наименование": it.name,
+    "Количество": it.currentQty,
+    "Минимум": it.minQty,
+    "Статус": it.currentQty < it.minQty ? "Мало" : "Норма"
+  }));
+  const ws = XLSX.utils.json_to_sheet(data);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Sklad");
+  const dateStr = new Date().toISOString().slice(0,10);
+  XLSX.writeFile(wb, sanitizeFilename(brand) + "_sklad_" + dateStr + ".xlsx");
+  showToast("Файл скачивается...", "success");
+}
+
+// Exports only the items currently below their minimum quantity for this brand.
+function exportBrandShortages(brand, shortages){
+  if(!shortages || shortages.length === 0){ showToast("Нехватки нет — экспортировать нечего.", "info"); return; }
+  const data = shortages.map(s => ({
+    "Артикул": s.artikul,
+    "Наименование": s.name,
+    "Количество": s.currentQty,
+    "Минимум": s.minQty,
+    "Не хватает": s.minQty - s.currentQty
+  }));
+  const ws = XLSX.utils.json_to_sheet(data);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Nehvatka");
+  const dateStr = new Date().toISOString().slice(0,10);
+  XLSX.writeFile(wb, sanitizeFilename(brand) + "_nehvatka_" + dateStr + ".xlsx");
+  showToast("Файл скачивается...", "success");
 }
 
 async function renderBrandThresholds(brand){
