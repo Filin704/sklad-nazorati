@@ -17,11 +17,11 @@
   --text-dim:#6B7280;
   --text-faint:#9AA1B1;
 
-  --accent:#4F46E5;          /* indigo — primary/active */
+  --accent:#4F46E5;
   --accent-soft:#EEF0FF;
   --accent-dim:#D6D9FB;
 
-  --warn:#F59E0B;             /* amber — stock figures / caution */
+  --warn:#F59E0B;
   --warn-soft:#FFF4E0;
 
   --danger:#EF4444;
@@ -46,7 +46,6 @@ body{
 }
 .app{display:flex; min-height:100vh;}
 
-/* ===== SIDEBAR ===== */
 .sidebar{
   width:250px;
   flex-shrink:0;
@@ -82,7 +81,6 @@ body{
 }
 .add-brand:hover{border-color:var(--accent); color:var(--accent);}
 
-/* ===== MAIN ===== */
 .main{flex:1; padding:26px 34px 60px 34px; max-width:1100px;}
 .main-header{display:flex; align-items:baseline; justify-content:space-between; margin-bottom:20px; flex-wrap:wrap; gap:10px;}
 .main-header h2{font-family:var(--display); font-size:26px; margin:0; font-weight:700; letter-spacing:-0.01em; display:flex; align-items:center; gap:10px;}
@@ -270,8 +268,6 @@ select:focus{outline:none; border-color:var(--accent);}
 <div id="toast"></div>
 
 <script>
-// Talks to our own Express backend (server.js) instead of Claude's window.storage.
-// Same get/set/delete/list shape, so the rest of the app didn't need to change.
 const storage = {
   async get(key){
     const res = await fetch('/api/kv/' + encodeURIComponent(key));
@@ -310,7 +306,7 @@ async function getIgnoredList(){
 }
 async function saveIgnoredList(data){ await storage.set(IGNORED_KEY, JSON.stringify(data)); }
 let brands = [];
-let activePage = "home"; // "home" or a brand name
+let activePage = "home";
 let activeBrandTab = "status";
 let parsedRows = null;
 let parsedHeaders = null;
@@ -354,10 +350,6 @@ async function getGlobalStock(){
 }
 async function saveGlobalStock(data){ await storage.set(GLOBAL_STOCK_KEY, JSON.stringify(data)); }
 
-// Build artikul -> [ {brand, name, minQty}, ... ] map from ALL brands' threshold registries.
-// This registry doubles as the brand-classification source of truth.
-// An artikul can legitimately belong to more than one brand (a shared/universal part),
-// so each artikul maps to a LIST of brand entries, not a single one.
 async function buildArtikulMap(){
   const map = {};
   for(const b of brands){
@@ -370,8 +362,6 @@ async function buildArtikulMap(){
   }
   return map;
 }
-
-/* ---------------- SIDEBAR ---------------- */
 
 async function renderSidebar(){
   document.getElementById("homeNavItem").className = "brand-item" + (activePage === "home" ? " active" : "");
@@ -421,8 +411,6 @@ document.getElementById("addBrandSave").onclick = async () => {
   showToast("Бренд «" + name + "» добавлен.", "success");
   renderAll();
 };
-
-/* ---------------- HOME PAGE ---------------- */
 
 async function renderHome(){
   const main = document.getElementById("main");
@@ -474,9 +462,6 @@ async function renderHome(){
   if(stock) await renderHomeResults(stock);
 }
 
-// Searches: (1) the global ignore list, (2) every brand's threshold registry
-// (an artikul can legitimately be registered under several brands), and
-// (3) the latest uploaded stock snapshot (for reference quantity).
 async function searchArtikul(query){
   const resultsEl = document.getElementById("artikulSearchResults");
   if(!query){ resultsEl.innerHTML = ""; return; }
@@ -485,7 +470,7 @@ async function searchArtikul(query){
   const ignoredList = await getIgnoredList();
   const ignoredHit = Object.keys(ignoredList).find(k => k.includes(nq)) || null;
 
-  const matches = []; // { brand, artikul, name, minQty }
+  const matches = [];
   for(const b of brands){
     const th = await getThresholds(b);
     Object.keys(th).forEach(art => {
@@ -651,27 +636,45 @@ function handleFile(file){
   reader.readAsArrayBuffer(file);
 }
 
-// Many accounting exports (1C etc.) use multi-row or merged headers, e.g.
-// "Итого" / "Нач. ост." / "Количество (в ед. хранения)" stacked across several lines
-// above the real data. This scans the first rows, treats the point where a row starts
-// looking numeric (real stock data) as the data start, and flattens everything above
-// into one combined header string per column so keyword matching still works.
+const HEADER_HINT_WORDS = [
+  "артикул","по кат","катал","код","kod","part","art.",
+  "количество","кол-во","остаток","qty","miqdor","ostatka",
+  "наимен","название","номенклатура","name","nomi","товар","tovar",
+  "итого","начал","ед. хран","ед.хран","ед. изм","ед.изм"
+];
+
 function extractHeaderAndData(rows){
   const firstNonEmpty = rows.findIndex(r => r.some(c => String(c).trim() !== ""));
   if(firstNonEmpty === -1) return { headers: [], dataRows: [] };
 
-  let dataStart = -1;
-  for(let i = firstNonEmpty + 1; i < Math.min(rows.length, firstNonEmpty + 20); i++){
-    const row = rows[i];
-    const nonEmpty = row.filter(c => String(c).trim() !== "");
-    if(nonEmpty.length < 1) continue;
-    const numericCount = nonEmpty.filter(c => {
-      const s = String(c).trim();
-      return /\d/.test(s) && /^[\d\s.,\-]+$/.test(s);
-    }).length;
-    if(numericCount / nonEmpty.length >= 0.4){ dataStart = i; break; }
+  const scanLimit = Math.min(rows.length, firstNonEmpty + 12);
+  let lastHeaderRow = firstNonEmpty;
+  let foundAnyHint = false;
+  for(let i = firstNonEmpty; i < scanLimit; i++){
+    const rowText = rows[i].map(c => String(c).trim().toLowerCase()).join(" | ");
+    if(!rowText.trim()) continue;
+    if(HEADER_HINT_WORDS.some(w => rowText.includes(w))){
+      lastHeaderRow = i;
+      foundAnyHint = true;
+    }
   }
-  if(dataStart === -1) dataStart = firstNonEmpty + 1;
+
+  let dataStart = lastHeaderRow + 1;
+
+  if(!foundAnyHint){
+    dataStart = -1;
+    for(let i = firstNonEmpty + 1; i < scanLimit; i++){
+      const row = rows[i];
+      const nonEmpty = row.filter(c => String(c).trim() !== "");
+      if(nonEmpty.length < 1) continue;
+      const numericCount = nonEmpty.filter(c => {
+        const s = String(c).trim();
+        return /\d/.test(s) && /^[\d\s.,\-]+$/.test(s);
+      }).length;
+      if(numericCount / nonEmpty.length >= 0.4){ dataStart = i; break; }
+    }
+    if(dataStart === -1) dataStart = firstNonEmpty + 1;
+  }
 
   const headerRows = rows.slice(firstNonEmpty, dataStart);
   const colCount = Math.max(0, ...rows.map(r => r.length));
@@ -684,8 +687,6 @@ function extractHeaderAndData(rows){
   return { headers, dataRows };
 }
 
-// Converts values like "8 593,700" (space = thousands separator, comma = decimal separator,
-// common in Russian-locale exports) into a proper number.
 function parseQty(raw){
   let s = String(raw===undefined||raw===null?"":raw).trim();
   if(s === "") return 0;
@@ -711,10 +712,6 @@ const ARTIKUL_KEYWORDS = ["артикул","по кат","катал","artikul",
 const QTY_KEYWORDS = ["количество","кол-во","остаток","qty","miqdor","ostatka","кол"];
 const NAME_KEYWORDS = ["наимен","название","номенклатура","name","nomi","товар","tovar"];
 
-// Detection order matters: Артикул first (most specific phrases like "по кат."/"артикул"),
-// then Количество (excluding whatever column was already claimed as Артикул),
-// then Наименование (excluding both). This prevents e.g. "Номенклатура.№ по кат." from
-// being mistaken for either Количество or a plain Наименование column.
 function detectColumns(headers){
   const artIdx = guessColumn(headers, ARTIKUL_KEYWORDS);
   const qtyIdx = guessColumn(headers, QTY_KEYWORDS, [artIdx]);
@@ -722,8 +719,6 @@ function detectColumns(headers){
   return { artIdx, qtyIdx, nameIdx };
 }
 
-// Try to auto-detect Артикул / Количество / Наименование columns and process immediately.
-// Falls back to manual selection only if detection isn't confident enough.
 function autoDetectAndProcess(){
   const d = detectColumns(parsedHeaders);
 
@@ -813,7 +808,6 @@ async function renderHomeResults(stock){
     if(hits.length > 0){
       hits.forEach(hit => brandGroups[hit.brand].push({...it, minQty: hit.minQty, registeredName: hit.name}));
     } else if(ignoredList[normKey(it.artikul)]){
-      // deliberately marked as "not needed" — skip entirely, don't ask about it again
     } else {
       unclassified.push(it);
     }
@@ -939,7 +933,7 @@ async function renderHomeResults(stock){
     };
 
     document.getElementById("saveAllUnclBtn").onclick = async () => {
-      const updates = {}; // brand -> {artikul: {name, minQty}}
+      const updates = {};
       const ignoredList = await getIgnoredList();
       let count = 0, ignoredCount = 0;
       document.querySelectorAll("#unclBody tr").forEach(tr => {
@@ -972,8 +966,6 @@ async function renderHomeResults(stock){
     };
   }
 }
-
-/* ---------------- BRAND PAGE ---------------- */
 
 async function renderBrandPage(brand){
   const main = document.getElementById("main");
@@ -1185,8 +1177,6 @@ async function renderBrandThresholds(brand){
   }
 }
 
-/* ---------------- MAIN ---------------- */
-
 async function renderAll(){
   await renderSidebar();
   if(activePage === "home") await renderHome();
@@ -1200,9 +1190,6 @@ async function renderAll(){
   await renderAll();
 })();
 
-// If the backend server isn't reachable (server down, or opened the static file
-// directly without running the server), all data silently looks empty with no error.
-// Detect that explicitly and tell the person what's wrong instead of failing quietly.
 async function checkStorageAvailability(){
   let ok = false;
   try{
