@@ -358,7 +358,7 @@ async function buildArtikulMap(){
     Object.keys(th).forEach(art => {
       const k = normKey(art);
       if(!map[k]) map[k] = [];
-      map[k].push({ brand: b, artikul: art, name: th[art].name, minQty: th[art].minQty });
+      map[k].push({ brand: b, artikul: art, name: th[art].name, minQty: th[art].minQty, orderQty: th[art].orderQty || 0, notNeeded: !!th[art].notNeeded });
     });
   }
   return map;
@@ -376,7 +376,7 @@ async function renderSidebar(){
     stock.items.forEach(it => {
       const hits = map[normKey(it.artikul)] || [];
       hits.forEach(hit => {
-        (stockByBrand[hit.brand] = stockByBrand[hit.brand] || []).push({...it, minQty:hit.minQty});
+        (stockByBrand[hit.brand] = stockByBrand[hit.brand] || []).push({...it, minQty:hit.minQty, notNeeded:hit.notNeeded});
       });
     });
   }
@@ -384,7 +384,7 @@ async function renderSidebar(){
   list.innerHTML = "";
   brands.forEach(b => {
     const items = stockByBrand[b] || [];
-    const shortages = items.filter(it => it.qty < it.minQty).length;
+    const shortages = items.filter(it => !it.notNeeded && it.qty < it.minQty).length;
     const li = document.createElement("li");
     li.className = "brand-item" + (b === activePage ? " active" : "");
     li.innerHTML = `<span>${esc(b)}</span>` + (shortages > 0 ? `<span class="brand-count has-shortage">${shortages}</span>` : "");
@@ -850,7 +850,7 @@ async function renderHomeResults(stock){
   stock.items.forEach(it => {
     const hits = map[normKey(it.artikul)] || [];
     if(hits.length > 0){
-      hits.forEach(hit => brandGroups[hit.brand].push({...it, minQty: hit.minQty, registeredName: hit.name}));
+      hits.forEach(hit => brandGroups[hit.brand].push({...it, minQty: hit.minQty, registeredName: hit.name, notNeeded: hit.notNeeded}));
     } else if(ignoredList[normKey(it.artikul)]){
     } else {
       unclassified.push(it);
@@ -860,7 +860,7 @@ async function renderHomeResults(stock){
   let totalShortages = 0;
   const cardsHtml = brands.map(b => {
     const items = brandGroups[b];
-    const shortages = items.filter(it => it.qty < it.minQty).length;
+    const shortages = items.filter(it => !it.notNeeded && it.qty < it.minQty).length;
     totalShortages += shortages;
     return `
       <div class="brand-card" data-brand="${esc(b)}">
@@ -937,13 +937,61 @@ async function renderHomeResults(stock){
     `;
   }
 
-  container.innerHTML = banner + `
+  const ignoredEntries = Object.entries(ignoredList);
+  let ignoredPanelHtml = "";
+  if(ignoredEntries.length > 0){
+    ignoredPanelHtml = `
+      <div class="panel">
+        <h3>Ранее помечено как «ненужное» без бренда (${ignoredEntries.length})</h3>
+        <p class="hint">
+          Эти артикулы находятся в общем списке «не нужен» без привязки к бренду (возможно, из-за более раннего поведения системы). Нажмите «Вернуть», чтобы они снова появились в таблице «Не определено по бренду» ниже — там вы сможете один раз указать бренд (и при необходимости снова отметить «не нужен», это сохранит бренд).
+        </p>
+        <div class="btn-row" style="margin-top:0; margin-bottom:14px;">
+          <button class="btn secondary small" id="restoreAllIgnoredBtn">Вернуть все ${ignoredEntries.length} в «Не определено»</button>
+        </div>
+        <div style="max-height:260px; overflow-y:auto;">
+        <table>
+          <thead><tr><th>Артикул</th><th>Наименование</th><th style="width:120px;"></th></tr></thead>
+          <tbody>
+            ${ignoredEntries.map(([key, info]) => `
+              <tr>
+                <td class="mono">${esc(info.artikul)}</td>
+                <td>${esc(info.name) || "<span style='color:var(--text-faint)'>—</span>"}</td>
+                <td><button class="btn secondary small restore-ignored-btn" data-key="${esc(key)}">Вернуть</button></td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+        </div>
+      </div>
+    `;
+  }
+
+  container.innerHTML = banner + ignoredPanelHtml + `
     <div class="panel">
       <h3>Бренды</h3>
       <p class="hint">Нажмите на бренд, чтобы посмотреть его остатки и список нехватки.</p>
       <div class="card-grid">${cardsHtml}</div>
     </div>
   ` + unclassifiedHtml;
+
+  const restoreAllBtn = document.getElementById("restoreAllIgnoredBtn");
+  if(restoreAllBtn){
+    restoreAllBtn.onclick = async () => {
+      await saveIgnoredList({});
+      showToast("Все артикулы возвращены в «Не определено по бренду».", "success");
+      renderAll();
+    };
+  }
+  container.querySelectorAll(".restore-ignored-btn").forEach(btn => {
+    btn.onclick = async () => {
+      const list = await getIgnoredList();
+      delete list[btn.dataset.key];
+      await saveIgnoredList(list);
+      showToast("Возвращено в «Не определено по бренду».", "success");
+      renderAll();
+    };
+  });
 
   container.querySelectorAll(".brand-card").forEach(card => {
     card.onclick = () => { activePage = card.dataset.brand; activeBrandTab = "status"; renderAll(); };
@@ -991,25 +1039,36 @@ async function renderHomeResults(stock){
     document.getElementById("saveAllUnclBtn").onclick = async () => {
       const updates = {};
       const ignoredList = await getIgnoredList();
-      let count = 0, ignoredCount = 0;
+      let count = 0, ignoredCount = 0, notNeededCount = 0;
       document.querySelectorAll("#unclBody tr").forEach(tr => {
         const idx = tr.dataset.idx;
         const item = unclassified[idx];
         const isIgnored = tr.querySelector(".row-ignore-opt").checked;
-        if(isIgnored){
+        const chosenBrands = Array.from(tr.querySelectorAll(".row-brand-opt:checked")).map(c => c.value);
+        const minQty = parseFloat(tr.querySelector(".min-select").value);
+        const orderQty = parseFloat(tr.querySelector(".order-select").value);
+
+        if(isIgnored && chosenBrands.length === 0){
+          // No brand chosen at all — truly unclassified & not needed anywhere.
           ignoredList[normKey(item.artikul)] = { artikul: item.artikul, name: item.name || "" };
           ignoredCount++;
           return;
         }
-        const chosenBrands = Array.from(tr.querySelectorAll(".row-brand-opt:checked")).map(c => c.value);
-        const minQty = parseFloat(tr.querySelector(".min-select").value);
-        const orderQty = parseFloat(tr.querySelector(".order-select").value);
         if(chosenBrands.length === 0) return;
+
+        // Brand(s) chosen — keep them even if marked "не нужен": the item still
+        // belongs to that brand's stock list, it just isn't monitored for shortage.
         chosenBrands.forEach(brand => {
           if(!updates[brand]) updates[brand] = {};
-          updates[brand][item.artikul] = { name: item.name || "", minQty: isNaN(minQty) ? 0 : minQty, orderQty: isNaN(orderQty) ? 0 : orderQty };
+          updates[brand][item.artikul] = {
+            name: item.name || "",
+            minQty: isNaN(minQty) ? 0 : minQty,
+            orderQty: isNaN(orderQty) ? 0 : orderQty,
+            notNeeded: isIgnored
+          };
         });
         count++;
+        if(isIgnored) notNeededCount++;
       });
       if(count === 0 && ignoredCount === 0){ showToast("Ни одна строка не размечена.", "warning"); return; }
       for(const brand of Object.keys(updates)){
@@ -1018,7 +1077,10 @@ async function renderHomeResults(stock){
         await saveThresholds(brand, th);
       }
       if(ignoredCount > 0) await saveIgnoredList(ignoredList);
-      showToast(count + " артикулов распределено по брендам" + (ignoredCount > 0 ? ", " + ignoredCount + " помечено как ненужные" : "") + ".", "success");
+      let msg = count + " артикулов распределено по брендам";
+      if(notNeededCount > 0) msg += " (из них " + notNeededCount + " помечено как «не нужен»)";
+      if(ignoredCount > 0) msg += ", " + ignoredCount + " без бренда помечено как ненужные";
+      showToast(msg + ".", "success");
       renderAll();
     };
   }
@@ -1090,11 +1152,11 @@ async function renderBrandStatus(brand, stock){
     return {
       artikul, name: t.name || (stockItem ? stockItem.name : ""),
       minQty: t.minQty, orderQty: t.orderQty || 0, currentQty: stockItem ? stockItem.qty : 0,
-      found: !!stockItem
+      notNeeded: !!t.notNeeded, found: !!stockItem
     };
   });
 
-  const shortages = items.filter(it => it.currentQty < it.minQty)
+  const shortages = items.filter(it => !it.notNeeded && it.currentQty < it.minQty)
     .sort((a,b) => (a.currentQty - a.minQty) - (b.currentQty - b.minQty));
 
   let banner = "";
@@ -1161,7 +1223,7 @@ async function renderBrandStatus(brand, stock){
             <td>${esc(it.name) || "<span style='color:var(--text-faint)'>—</span>"}</td>
             <td class="mono" style="color:var(--text);">${it.currentQty}</td>
             <td class="mono" style="color:var(--text);">${it.minQty}</td>
-            <td>${it.currentQty < it.minQty ? '<span class="tag low">Мало</span>' : '<span class="tag ok">Норма</span>'}</td>
+            <td>${it.notNeeded ? '<span class="tag" style="background:var(--panel-alt); color:var(--text-faint);">Не нужен</span>' : (it.currentQty < it.minQty ? '<span class="tag low">Мало</span>' : '<span class="tag ok">Норма</span>')}</td>
           </tr>`).join("")}
           ${items.length===0 ? `<tr><td colspan="5" class="empty-state">Список минимальных количеств пуст.</td></tr>` : ""}
         </tbody>
@@ -1230,8 +1292,9 @@ async function renderBrandThresholds(brand){
     <tr data-artikul="${esc(artikul)}">
       <td class="mono">${esc(artikul)}</td>
       <td><input type="text" class="name-input" value="${esc(v.name || "")}" placeholder="наименование (не обязательно)"></td>
-      <td style="width:110px;"><input type="number" class="min-input" min="0" value="${v.minQty}"></td>
-      <td style="width:120px;"><input type="number" class="order-input" min="0" value="${v.orderQty || 0}"></td>
+      <td style="width:110px;"><input type="number" class="min-input" min="0" value="${v.minQty}" ${v.notNeeded?'disabled':''}></td>
+      <td style="width:120px;"><input type="number" class="order-input" min="0" value="${v.orderQty || 0}" ${v.notNeeded?'disabled':''}></td>
+      <td style="width:80px; text-align:center;"><input type="checkbox" class="notneeded-input" ${v.notNeeded?'checked':''}></td>
       <td style="width:36px;"><button class="del-row" title="Удалить">✕</button></td>
     </tr>
   `).join("");
@@ -1239,18 +1302,26 @@ async function renderBrandThresholds(brand){
   el.innerHTML = `
     <div class="panel">
       <h3>Минимальные количества — ${esc(brand)}</h3>
-      <p class="hint">Задайте минимальное количество для каждого артикула один раз. Столбец «Заказать количество» — сколько нужно заказать у поставщика; он используется при экспорте списка нехватки в Excel. Этот список также используется для автоматического определения бренда при загрузке общей базы.</p>
+      <p class="hint">Задайте минимальное количество для каждого артикула один раз. Столбец «Заказать количество» — сколько нужно заказать у поставщика; он используется при экспорте списка нехватки в Excel. «Не нужен» — деталь остаётся привязанной к бренду (появится в экспорте базы склада), но исключается из отслеживания нехватки. Этот список также используется для автоматического определения бренда при загрузке общей базы.</p>
       <div class="btn-row" style="margin-bottom:14px; margin-top:0;">
         <button class="btn secondary" id="addThreshRow">+ Добавить строку</button>
         <button class="btn" id="saveThresh">Сохранить</button>
       </div>
       <table>
-        <thead><tr><th>Артикул</th><th>Наименование</th><th>Минимум</th><th>Заказать количество</th><th></th></tr></thead>
+        <thead><tr><th>Артикул</th><th>Наименование</th><th>Минимум</th><th>Заказать количество</th><th>Не нужен</th><th></th></tr></thead>
         <tbody id="threshBody">${rowsHtml}</tbody>
       </table>
       ${entries.length===0 ? `<div class="empty-state"><div class="big">🔧</div>Минимальные количества ещё не заданы.<br>Нажмите «Добавить строку» или сначала загрузите базу и привяжите позиции с «Главная».</div>` : ""}
     </div>
   `;
+
+  document.querySelectorAll("#threshBody .notneeded-input").forEach(cb => {
+    cb.onchange = () => {
+      const tr = cb.closest("tr");
+      tr.querySelector(".min-input").disabled = cb.checked;
+      tr.querySelector(".order-input").disabled = cb.checked;
+    };
+  });
 
   document.getElementById("addThreshRow").onclick = () => {
     const body = document.getElementById("threshBody");
@@ -1261,9 +1332,14 @@ async function renderBrandThresholds(brand){
       <td><input type="text" class="name-input" placeholder="наименование (не обязательно)"></td>
       <td style="width:110px;"><input type="number" class="min-input" min="0" value="1"></td>
       <td style="width:120px;"><input type="number" class="order-input" min="0" value="0"></td>
+      <td style="width:80px; text-align:center;"><input type="checkbox" class="notneeded-input"></td>
       <td style="width:36px;"><button class="del-row" title="Удалить">✕</button></td>
     `;
     body.appendChild(tr);
+    tr.querySelector(".notneeded-input").onchange = (e) => {
+      tr.querySelector(".min-input").disabled = e.target.checked;
+      tr.querySelector(".order-input").disabled = e.target.checked;
+    };
     attachDel();
   };
 
@@ -1277,8 +1353,9 @@ async function renderBrandThresholds(brand){
       const name = tr.querySelector(".name-input").value.trim();
       const minQty = parseFloat(tr.querySelector(".min-input").value);
       const orderQty = parseFloat(tr.querySelector(".order-input").value);
+      const notNeeded = tr.querySelector(".notneeded-input").checked;
       if(!artikul){ hasError = true; return; }
-      newTh[artikul] = { name, minQty: isNaN(minQty)?0:minQty, orderQty: isNaN(orderQty)?0:orderQty };
+      newTh[artikul] = { name, minQty: isNaN(minQty)?0:minQty, orderQty: isNaN(orderQty)?0:orderQty, notNeeded };
     });
     if(hasError){ showToast("В каждой строке должен быть указан артикул.", "error"); return; }
     await saveThresholds(brand, newTh);
