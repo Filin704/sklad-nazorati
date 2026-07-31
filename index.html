@@ -944,24 +944,31 @@ async function renderHomeResults(stock){
       <div class="panel">
         <h3>Ранее помечено как «ненужное» без бренда (${ignoredEntries.length})</h3>
         <p class="hint">
-          Эти артикулы находятся в общем списке «не нужен» без привязки к бренду (возможно, из-за более раннего поведения системы). Нажмите «Вернуть», чтобы они снова появились в таблице «Не определено по бренду» ниже — там вы сможете один раз указать бренд (и при необходимости снова отметить «не нужен», это сохранит бренд).
+          Эти артикулы были помечены «не нужен» без привязки к бренду (из-за более раннего поведения системы). Выберите бренд(ы) прямо здесь и нажмите «Сохранить все привязанные» — деталь останется в этом бренде с пометкой «не нужен» (не будет отслеживаться на нехватку, но появится в экспорте базы склада).
         </p>
-        <div class="btn-row" style="margin-top:0; margin-bottom:14px;">
-          <button class="btn secondary small" id="restoreAllIgnoredBtn">Вернуть все ${ignoredEntries.length} в «Не определено»</button>
-        </div>
-        <div style="max-height:260px; overflow-y:auto;">
+        <div style="max-height:400px; overflow-y:auto;">
         <table>
-          <thead><tr><th>Артикул</th><th>Наименование</th><th style="width:120px;"></th></tr></thead>
-          <tbody>
+          <thead><tr>
+            <th>Артикул</th><th>Наименование</th>
+            <th style="width:260px;">Бренды (можно несколько)</th>
+          </tr></thead>
+          <tbody id="ignoredBody">
             ${ignoredEntries.map(([key, info]) => `
-              <tr>
+              <tr data-key="${esc(key)}">
                 <td class="mono">${esc(info.artikul)}</td>
                 <td>${esc(info.name) || "<span style='color:var(--text-faint)'>—</span>"}</td>
-                <td><button class="btn secondary small restore-ignored-btn" data-key="${esc(key)}">Вернуть</button></td>
+                <td>
+                  <div class="brand-chip-row">
+                    ${brands.map(b=>`<label class="brand-chip"><input type="checkbox" class="ignored-brand-opt" value="${esc(b)}"> ${esc(b)}</label>`).join("")}
+                  </div>
+                </td>
               </tr>
             `).join("")}
           </tbody>
         </table>
+        </div>
+        <div class="btn-row">
+          <button class="btn" id="saveIgnoredBrandsBtn">Сохранить все привязанные</button>
         </div>
       </div>
     `;
@@ -975,23 +982,36 @@ async function renderHomeResults(stock){
     </div>
   ` + unclassifiedHtml;
 
-  const restoreAllBtn = document.getElementById("restoreAllIgnoredBtn");
-  if(restoreAllBtn){
-    restoreAllBtn.onclick = async () => {
-      await saveIgnoredList({});
-      showToast("Все артикулы возвращены в «Не определено по бренду».", "success");
+  const saveIgnoredBrandsBtn = document.getElementById("saveIgnoredBrandsBtn");
+  if(saveIgnoredBrandsBtn){
+    saveIgnoredBrandsBtn.onclick = async () => {
+      const list = await getIgnoredList();
+      const updates = {};
+      let count = 0;
+      document.querySelectorAll("#ignoredBody tr").forEach(tr => {
+        const key = tr.dataset.key;
+        const info = list[key];
+        if(!info) return;
+        const chosenBrands = Array.from(tr.querySelectorAll(".ignored-brand-opt:checked")).map(c => c.value);
+        if(chosenBrands.length === 0) return;
+        chosenBrands.forEach(brand => {
+          if(!updates[brand]) updates[brand] = {};
+          updates[brand][info.artikul] = { name: info.name || "", minQty: 0, orderQty: 0, notNeeded: true };
+        });
+        delete list[key];
+        count++;
+      });
+      if(count === 0){ showToast("Отметьте хотя бы один бренд для хотя бы одной строки.", "warning"); return; }
+      for(const brand of Object.keys(updates)){
+        const th = await getThresholds(brand);
+        Object.assign(th, updates[brand]);
+        await saveThresholds(brand, th);
+      }
+      await saveIgnoredList(list);
+      showToast(count + " артикулов привязано к брендам.", "success");
       renderAll();
     };
   }
-  container.querySelectorAll(".restore-ignored-btn").forEach(btn => {
-    btn.onclick = async () => {
-      const list = await getIgnoredList();
-      delete list[btn.dataset.key];
-      await saveIgnoredList(list);
-      showToast("Возвращено в «Не определено по бренду».", "success");
-      renderAll();
-    };
-  });
 
   container.querySelectorAll(".brand-card").forEach(card => {
     card.onclick = () => { activePage = card.dataset.brand; activeBrandTab = "status"; renderAll(); };
