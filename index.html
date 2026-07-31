@@ -105,6 +105,7 @@ tr:hover td{background:var(--panel-alt);}
 
 input[type=text], input[type=number]{background:var(--panel-alt); border:1px solid var(--border); color:var(--text); padding:8px 10px; border-radius:8px; font-size:13px; width:100%; font-family:inherit;}
 input:focus{outline:none; border-color:var(--accent); background:#fff;}
+input:disabled{opacity:.4; cursor:not-allowed; background:var(--border);}
 select{width:100%; background:var(--panel-alt); border:1px solid var(--border); color:var(--text); padding:8px 10px; border-radius:8px; font-size:13px;}
 select:focus{outline:none; border-color:var(--accent);}
 
@@ -906,6 +907,7 @@ async function renderHomeResults(stock){
             <th style="width:30px;"><input type="checkbox" id="unclSelectAll"></th>
             <th>Артикул</th><th>Наименование</th><th>Кол-во</th>
             <th style="width:220px;">Бренды (можно несколько)</th><th style="width:100px;">Минимум</th>
+            <th style="width:110px;">Заказать</th>
             <th style="width:90px;">Не нужен</th>
           </tr></thead>
           <tbody id="unclBody">
@@ -921,6 +923,7 @@ async function renderHomeResults(stock){
                   </div>
                 </td>
                 <td><input type="number" class="min-select" data-idx="${idx}" min="0" value="1"></td>
+                <td><input type="number" class="order-select" data-idx="${idx}" min="0" value="0"></td>
                 <td style="text-align:center;"><input type="checkbox" class="row-ignore-opt" data-idx="${idx}" title="Эта деталь не нужна ни одному складу — исключить из отслеживания"></td>
               </tr>
             `).join("")}
@@ -951,6 +954,16 @@ async function renderHomeResults(stock){
     selectAll.onchange = () => {
       document.querySelectorAll("#unclBody .row-check").forEach(cb => { cb.checked = selectAll.checked; });
     };
+
+    document.querySelectorAll("#unclBody .row-ignore-opt").forEach(cb => {
+      cb.onchange = () => {
+        const idx = cb.dataset.idx;
+        const minInput = document.querySelector(`.min-select[data-idx="${idx}"]`);
+        const orderInput = document.querySelector(`.order-select[data-idx="${idx}"]`);
+        if(minInput) minInput.disabled = cb.checked;
+        if(orderInput) orderInput.disabled = cb.checked;
+      };
+    });
 
     document.getElementById("bulkApplyBtn").onclick = () => {
       const chosenBrands = Array.from(document.querySelectorAll("#bulkBrandChips .brand-opt:checked")).map(c => c.value);
@@ -990,10 +1003,11 @@ async function renderHomeResults(stock){
         }
         const chosenBrands = Array.from(tr.querySelectorAll(".row-brand-opt:checked")).map(c => c.value);
         const minQty = parseFloat(tr.querySelector(".min-select").value);
+        const orderQty = parseFloat(tr.querySelector(".order-select").value);
         if(chosenBrands.length === 0) return;
         chosenBrands.forEach(brand => {
           if(!updates[brand]) updates[brand] = {};
-          updates[brand][item.artikul] = { name: item.name || "", minQty: isNaN(minQty) ? 0 : minQty };
+          updates[brand][item.artikul] = { name: item.name || "", minQty: isNaN(minQty) ? 0 : minQty, orderQty: isNaN(orderQty) ? 0 : orderQty };
         });
         count++;
       });
@@ -1075,7 +1089,7 @@ async function renderBrandStatus(brand, stock){
     const stockItem = stockMap[normKey(artikul)];
     return {
       artikul, name: t.name || (stockItem ? stockItem.name : ""),
-      minQty: t.minQty, currentQty: stockItem ? stockItem.qty : 0,
+      minQty: t.minQty, orderQty: t.orderQty || 0, currentQty: stockItem ? stockItem.qty : 0,
       found: !!stockItem
     };
   });
@@ -1180,9 +1194,7 @@ function exportBrandStock(brand, items){
   const data = items.map(it => ({
     "Артикул": it.artikul,
     "Наименование": it.name,
-    "Количество": it.currentQty,
-    "Минимум": it.minQty,
-    "Статус": it.currentQty < it.minQty ? "Мало" : "Норма"
+    "Актуальное количество": it.currentQty
   }));
   const ws = XLSX.utils.json_to_sheet(data);
   const wb = XLSX.utils.book_new();
@@ -1198,9 +1210,8 @@ function exportBrandShortages(brand, shortages){
   const data = shortages.map(s => ({
     "Артикул": s.artikul,
     "Наименование": s.name,
-    "Количество": s.currentQty,
-    "Минимум": s.minQty,
-    "Не хватает": s.minQty - s.currentQty
+    "Заказать": s.orderQty || 0,
+    "Остаток": s.currentQty
   }));
   const ws = XLSX.utils.json_to_sheet(data);
   const wb = XLSX.utils.book_new();
@@ -1220,6 +1231,7 @@ async function renderBrandThresholds(brand){
       <td class="mono">${esc(artikul)}</td>
       <td><input type="text" class="name-input" value="${esc(v.name || "")}" placeholder="наименование (не обязательно)"></td>
       <td style="width:110px;"><input type="number" class="min-input" min="0" value="${v.minQty}"></td>
+      <td style="width:120px;"><input type="number" class="order-input" min="0" value="${v.orderQty || 0}"></td>
       <td style="width:36px;"><button class="del-row" title="Удалить">✕</button></td>
     </tr>
   `).join("");
@@ -1227,13 +1239,13 @@ async function renderBrandThresholds(brand){
   el.innerHTML = `
     <div class="panel">
       <h3>Минимальные количества — ${esc(brand)}</h3>
-      <p class="hint">Задайте минимальное количество для каждого артикула один раз. Этот список также используется для автоматического определения бренда при загрузке общей базы.</p>
+      <p class="hint">Задайте минимальное количество для каждого артикула один раз. Столбец «Заказать количество» — сколько нужно заказать у поставщика; он используется при экспорте списка нехватки в Excel. Этот список также используется для автоматического определения бренда при загрузке общей базы.</p>
       <div class="btn-row" style="margin-bottom:14px; margin-top:0;">
         <button class="btn secondary" id="addThreshRow">+ Добавить строку</button>
         <button class="btn" id="saveThresh">Сохранить</button>
       </div>
       <table>
-        <thead><tr><th>Артикул</th><th>Наименование</th><th>Минимум</th><th></th></tr></thead>
+        <thead><tr><th>Артикул</th><th>Наименование</th><th>Минимум</th><th>Заказать количество</th><th></th></tr></thead>
         <tbody id="threshBody">${rowsHtml}</tbody>
       </table>
       ${entries.length===0 ? `<div class="empty-state"><div class="big">🔧</div>Минимальные количества ещё не заданы.<br>Нажмите «Добавить строку» или сначала загрузите базу и привяжите позиции с «Главная».</div>` : ""}
@@ -1248,6 +1260,7 @@ async function renderBrandThresholds(brand){
       <td><input type="text" class="artikul-input mono" placeholder="номер артикула"></td>
       <td><input type="text" class="name-input" placeholder="наименование (не обязательно)"></td>
       <td style="width:110px;"><input type="number" class="min-input" min="0" value="1"></td>
+      <td style="width:120px;"><input type="number" class="order-input" min="0" value="0"></td>
       <td style="width:36px;"><button class="del-row" title="Удалить">✕</button></td>
     `;
     body.appendChild(tr);
@@ -1263,8 +1276,9 @@ async function renderBrandThresholds(brand){
       const artikul = artikulInput ? artikulInput.value.trim() : tr.dataset.artikul;
       const name = tr.querySelector(".name-input").value.trim();
       const minQty = parseFloat(tr.querySelector(".min-input").value);
+      const orderQty = parseFloat(tr.querySelector(".order-input").value);
       if(!artikul){ hasError = true; return; }
-      newTh[artikul] = { name, minQty: isNaN(minQty)?0:minQty };
+      newTh[artikul] = { name, minQty: isNaN(minQty)?0:minQty, orderQty: isNaN(orderQty)?0:orderQty };
     });
     if(hasError){ showToast("В каждой строке должен быть указан артикул.", "error"); return; }
     await saveThresholds(brand, newTh);
