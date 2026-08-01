@@ -384,7 +384,7 @@ async function renderSidebar(){
   list.innerHTML = "";
   brands.forEach(b => {
     const items = stockByBrand[b] || [];
-    const shortages = items.filter(it => !it.notNeeded && it.qty < it.minQty).length;
+    const shortages = items.filter(it => !it.notNeeded && it.qty <= it.minQty).length;
     const li = document.createElement("li");
     li.className = "brand-item" + (b === activePage ? " active" : "");
     li.innerHTML = `<span>${esc(b)}</span>` + (shortages > 0 ? `<span class="brand-count has-shortage">${shortages}</span>` : "");
@@ -860,7 +860,7 @@ async function renderHomeResults(stock){
   let totalShortages = 0;
   const cardsHtml = brands.map(b => {
     const items = brandGroups[b];
-    const shortages = items.filter(it => !it.notNeeded && it.qty < it.minQty).length;
+    const shortages = items.filter(it => !it.notNeeded && it.qty <= it.minQty).length;
     totalShortages += shortages;
     return `
       <div class="brand-card" data-brand="${esc(b)}">
@@ -1176,7 +1176,7 @@ async function renderBrandStatus(brand, stock){
     };
   });
 
-  const shortages = items.filter(it => !it.notNeeded && it.currentQty < it.minQty)
+  const shortages = items.filter(it => !it.notNeeded && it.currentQty <= it.minQty)
     .sort((a,b) => (a.currentQty - a.minQty) - (b.currentQty - b.minQty));
 
   let banner = "";
@@ -1243,7 +1243,7 @@ async function renderBrandStatus(brand, stock){
             <td>${esc(it.name) || "<span style='color:var(--text-faint)'>—</span>"}</td>
             <td class="mono" style="color:var(--text);">${it.currentQty}</td>
             <td class="mono" style="color:var(--text);">${it.minQty}</td>
-            <td>${it.notNeeded ? '<span class="tag" style="background:var(--panel-alt); color:var(--text-faint);">Не нужен</span>' : (it.currentQty < it.minQty ? '<span class="tag low">Мало</span>' : '<span class="tag ok">Норма</span>')}</td>
+            <td>${it.notNeeded ? '<span class="tag" style="background:var(--panel-alt); color:var(--text-faint);">Не нужен</span>' : (it.currentQty <= it.minQty ? '<span class="tag low">Мало</span>' : '<span class="tag ok">Норма</span>')}</td>
           </tr>`).join("")}
           ${items.length===0 ? `<tr><td colspan="5" class="empty-state">Список минимальных количеств пуст.</td></tr>` : ""}
         </tbody>
