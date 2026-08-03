@@ -1308,6 +1308,10 @@ async function renderBrandStatus(brand, stock){
     `;
   }
 
+  const totalQty = items.reduce((s, it) => s + (Number(it.currentQty) || 0), 0);
+  const hasAnySum = items.some(it => it.sum !== null && it.sum !== undefined);
+  const totalSum = items.reduce((s, it) => s + (Number(it.sum) || 0), 0);
+
   el.innerHTML = banner + exportPanel + shortageTable + `
     <div class="panel">
       <h3>Полный список отслеживаемых позиций</h3>
@@ -1327,6 +1331,16 @@ async function renderBrandStatus(brand, stock){
           </tr>`).join("")}
           ${items.length===0 ? `<tr><td colspan="6" class="empty-state">Список минимальных количеств пуст.</td></tr>` : ""}
         </tbody>
+        ${items.length > 0 ? `
+        <tfoot>
+          <tr style="background:var(--panel-alt); font-weight:700;">
+            <td colspan="2" style="text-align:right; position:sticky; bottom:0; background:var(--panel-alt);">Итого:</td>
+            <td class="mono" style="color:var(--text); position:sticky; bottom:0; background:var(--panel-alt);">${totalQty}</td>
+            <td style="position:sticky; bottom:0; background:var(--panel-alt);"></td>
+            <td class="mono" style="color:var(--text); position:sticky; bottom:0; background:var(--panel-alt);">${hasAnySum ? formatSum(totalSum) : "—"}</td>
+            <td style="position:sticky; bottom:0; background:var(--panel-alt);"></td>
+          </tr>
+        </tfoot>` : ""}
       </table>
       </div>
     </div>
