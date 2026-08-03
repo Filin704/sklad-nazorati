@@ -70,6 +70,19 @@ async function kvDelete(key) {
   saveFileStore(store);
 }
 
+async function kvGetBatch(keys) {
+  if (collection) {
+    const docs = await collection.find({ _id: { $in: keys } }).toArray();
+    const result = {};
+    docs.forEach(d => { result[d._id] = d.value; });
+    return result;
+  }
+  const store = loadFileStore();
+  const result = {};
+  keys.forEach(k => { if (k in store) result[k] = store[k]; });
+  return result;
+}
+
 async function kvListKeys(prefix) {
   if (collection) {
     const docs = await collection
@@ -109,6 +122,18 @@ app.get('/api/kv', async (req, res) => {
   try {
     const keys = await kvListKeys(req.query.prefix || '');
     res.json({ keys });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Fetches multiple keys in a single round-trip (one Mongo query with $in instead
+// of N separate requests). Used by the frontend to load all brand data + stock +
+// ignore list in one shot instead of one request per brand.
+app.get('/api/kv-batch', async (req, res) => {
+  try {
+    const keys = (req.query.keys || '').split(',').map(k => k.trim()).filter(Boolean);
+    if (keys.length === 0) return res.json({ values: {} });
+    const values = await kvGetBatch(keys);
+    res.json({ values });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
