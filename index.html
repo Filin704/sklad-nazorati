@@ -733,12 +733,14 @@ function guessColumn(headers, keywords, excludeIdx){
 const ARTIKUL_KEYWORDS = ["артикул","по кат","катал","artikul","код","kod","part","art."];
 const QTY_KEYWORDS = ["количество","кол-во","остаток","qty","miqdor","ostatka","кол"];
 const NAME_KEYWORDS = ["наимен","название","номенклатура","name","nomi","товар","tovar"];
+const SUM_KEYWORDS = ["сумма","стоимост","amount","summa","narx","цена"];
 
 function detectColumns(headers){
   const artIdx = guessColumn(headers, ARTIKUL_KEYWORDS);
   const qtyIdx = guessColumn(headers, QTY_KEYWORDS, [artIdx]);
   const nameIdx = guessColumn(headers, NAME_KEYWORDS, [artIdx, qtyIdx]);
-  return { artIdx, qtyIdx, nameIdx };
+  const sumIdx = guessColumn(headers, SUM_KEYWORDS, [artIdx, qtyIdx, nameIdx]);
+  return { artIdx, qtyIdx, nameIdx, sumIdx };
 }
 
 // Checks how many of the first N rows in this column actually contain a number.
@@ -788,11 +790,11 @@ function autoDetectAndProcess(){
   const d = detectColumnsWithData(parsedHeaders, parsedRows);
 
   if(d.artIdx >= 0 && d.qtyIdx >= 0){
-    processColumns(d.artIdx, d.qtyIdx, d.nameIdx);
+    processColumns(d.artIdx, d.qtyIdx, d.nameIdx, d.sumIdx);
     const mapArea = document.getElementById("mapArea");
     mapArea.innerHTML = `
       <div class="detect-note">
-        ✅ Столбцы определены автоматически: <b>Артикул</b> = «${esc(parsedHeaders[d.artIdx])}», <b>Количество</b> = «${esc(parsedHeaders[d.qtyIdx])}»${d.nameIdx>=0 ? `, <b>Наименование</b> = «${esc(parsedHeaders[d.nameIdx])}»` : ""}.
+        ✅ Столбцы определены автоматически: <b>Артикул</b> = «${esc(parsedHeaders[d.artIdx])}», <b>Количество</b> = «${esc(parsedHeaders[d.qtyIdx])}»${d.nameIdx>=0 ? `, <b>Наименование</b> = «${esc(parsedHeaders[d.nameIdx])}»` : ""}${d.sumIdx>=0 ? `, <b>Сумма</b> = «${esc(parsedHeaders[d.sumIdx])}»` : ""}.
         <a id="fixColumnsLink">Указать столбцы вручную</a>
       </div>`;
     document.getElementById("fixColumnsLink").onclick = renderColumnMap;
@@ -817,32 +819,39 @@ function renderColumnMap(){
       <div><label>Столбец «Артикул» *</label><select id="colArtikul">${opts}</select></div>
       <div><label>Столбец «Количество» *</label><select id="colQty">${opts}</select></div>
       <div><label>Столбец «Наименование» (не обязательно)</label><select id="colName"><option value="-1">— не выбрано —</option>${opts}</select></div>
+      <div><label>Столбец «Сумма» (не обязательно)</label><select id="colSum"><option value="-1">— не выбрано —</option>${opts}</select></div>
     </div>
     <div class="btn-row"><button class="btn" id="processBtn">Обработать базу</button></div>
   `;
   if(d.artIdx >= 0) document.getElementById("colArtikul").value = d.artIdx;
   if(d.qtyIdx >= 0) document.getElementById("colQty").value = d.qtyIdx;
   if(d.nameIdx >= 0) document.getElementById("colName").value = d.nameIdx;
+  if(d.sumIdx >= 0) document.getElementById("colSum").value = d.sumIdx;
 
   document.getElementById("processBtn").onclick = () => {
     const aIdx = parseInt(document.getElementById("colArtikul").value);
     const qIdx = parseInt(document.getElementById("colQty").value);
     const nIdx = parseInt(document.getElementById("colName").value);
-    processColumns(aIdx, qIdx, nIdx);
+    const sIdx = parseInt(document.getElementById("colSum").value);
+    processColumns(aIdx, qIdx, nIdx, sIdx);
     document.getElementById("mapArea").innerHTML = `<div class="detect-note">✅ Столбцы применены вручную. <a id="fixColumnsLink2">Изменить</a></div>`;
     document.getElementById("fixColumnsLink2").onclick = renderColumnMap;
   };
 }
 
 
-async function processColumns(aIdx, qIdx, nIdx){
+async function processColumns(aIdx, qIdx, nIdx, sIdx){
+  sIdx = (sIdx === undefined) ? -1 : sIdx;
   const items = [];
   parsedRows.forEach(r => {
     const artikul = String(r[aIdx]===undefined?"":r[aIdx]).trim();
     if(!artikul) return;
     let qty = parseQty(r[qIdx]);
     const name = nIdx >= 0 ? String(r[nIdx]===undefined?"":r[nIdx]).trim() : "";
-    items.push({artikul, name, qty});
+    const sum = sIdx >= 0 ? parseQty(r[sIdx]) : undefined;
+    const item = {artikul, name, qty};
+    if(sum !== undefined) item.sum = sum;
+    items.push(item);
   });
 
   if(items.length === 0){
@@ -1193,6 +1202,7 @@ async function renderBrandStatus(brand, stock){
     return {
       artikul, name: t.name || (stockItem ? stockItem.name : ""),
       minQty: t.minQty, orderQty: t.orderQty || 0, currentQty: stockItem ? stockItem.qty : 0,
+      sum: stockItem && stockItem.sum !== undefined ? stockItem.sum : null,
       notNeeded: !!t.notNeeded, flag1: !!t.flag1, flag2: !!t.flag2, found: !!stockItem
     };
   });
@@ -1262,16 +1272,17 @@ async function renderBrandStatus(brand, stock){
       <input type="text" class="search-box" id="searchBox" placeholder="Поиск по артикулу или наименованию...">
       <div style="max-height:420px; overflow-y:auto;">
       <table>
-        <thead><tr><th>Артикул</th><th>Наименование</th><th>Кол-во</th><th>Минимум</th><th>Статус</th></tr></thead>
+        <thead><tr><th>Артикул</th><th>Наименование</th><th>Кол-во</th><th>Минимум</th><th>Сумма</th><th>Статус</th></tr></thead>
         <tbody id="fullBody">
           ${items.map(it => `<tr data-search="${esc((it.artikul+" "+it.name).toLowerCase())}">
             <td class="mono">${esc(it.artikul)}</td>
             <td>${esc(it.name) || "<span style='color:var(--text-faint)'>—</span>"}</td>
             <td class="mono" style="color:var(--text);">${it.currentQty}</td>
             <td class="mono" style="color:var(--text);">${it.minQty}</td>
+            <td class="mono" style="color:var(--text);">${it.sum !== null ? formatSum(it.sum) : "<span style='color:var(--text-faint)'>—</span>"}</td>
             <td>${it.notNeeded ? '<span class="tag" style="background:var(--panel-alt); color:var(--text-faint);">Не нужен</span>' : (it.currentQty <= it.minQty ? '<span class="tag low">Мало</span>' : '<span class="tag ok">Норма</span>')}</td>
           </tr>`).join("")}
-          ${items.length===0 ? `<tr><td colspan="5" class="empty-state">Список минимальных количеств пуст.</td></tr>` : ""}
+          ${items.length===0 ? `<tr><td colspan="6" class="empty-state">Список минимальных количеств пуст.</td></tr>` : ""}
         </tbody>
       </table>
       </div>
@@ -1317,6 +1328,12 @@ async function renderBrandStatus(brand, stock){
 // Sanitizes a brand name for safe use in a downloaded filename.
 function sanitizeFilename(s){
   return String(s).replace(/[^\wа-яА-ЯёЁ\-]+/gi, "_");
+}
+
+// Formats a number with space thousands separators for display, e.g. 4320000 -> "4 320 000".
+function formatSum(n){
+  if(n === null || n === undefined || isNaN(n)) return "—";
+  return Math.round(n).toLocaleString("ru-RU").replace(/,/g, " ");
 }
 
 // Exports the brand's full tracked stock list to an .xlsx file, downloaded directly
