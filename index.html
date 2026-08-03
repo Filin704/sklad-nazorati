@@ -508,7 +508,7 @@ async function loadCoreData(){
 
 async function renderSidebar(){
   document.getElementById("homeNavItem").className = "brand-item" + (activePage === "home" ? " active" : "");
-  document.getElementById("homeNavItem").onclick = () => { activePage = "home"; renderAll(); };
+  document.getElementById("homeNavItem").onclick = () => { activePage = "home"; renderFromCache(); };
 
   const list = document.getElementById("brandList");
   const stock = cachedStock;
@@ -534,7 +534,7 @@ async function renderSidebar(){
       (logo ? `<div class="brand-logo" style="background-image:url('${logo}')"></div>` : "") +
       `<span>${esc(b)}</span>` +
       (shortages > 0 ? `<span class="brand-count has-shortage">${shortages}</span>` : "");
-    li.onclick = () => { activePage = b; activeBrandTab = "status"; renderAll(); };
+    li.onclick = () => { activePage = b; activeBrandTab = "status"; renderFromCache(); };
     list.appendChild(li);
   });
 }
@@ -1171,7 +1171,7 @@ async function renderHomeResults(stock){
   }
 
   container.querySelectorAll(".brand-card").forEach(card => {
-    card.onclick = () => { activePage = card.dataset.brand; activeBrandTab = "status"; renderAll(); };
+    card.onclick = () => { activePage = card.dataset.brand; activeBrandTab = "status"; renderFromCache(); };
   });
 
   if(unclassified.length > 0){
@@ -1208,10 +1208,11 @@ async function renderHomeResults(stock){
       showToast("Применено к " + checked.length + " строкам. Не забудьте нажать «Сохранить все размеченные».", "info");
     };
 
-    document.getElementById("unclSearch").oninput = (e) => {
+    const unclRows = Array.from(document.querySelectorAll("#unclBody tr"));
+    document.getElementById("unclSearch").oninput = debounce((e) => {
       const q = e.target.value.toLowerCase().trim();
-      document.querySelectorAll("#unclBody tr").forEach(tr => { tr.style.display = tr.dataset.search.includes(q) ? "" : "none"; });
-    };
+      unclRows.forEach(tr => { tr.style.display = tr.dataset.search.includes(q) ? "" : "none"; });
+    }, 150);
 
     document.getElementById("saveAllUnclBtn").onclick = async () => {
       const updates = {};
@@ -1287,12 +1288,12 @@ async function renderBrandPage(brand){
       <button class="btn small" id="renameSave">Сохранить</button>
       <button class="btn secondary small" id="renameCancel">Отмена</button>`;
     document.getElementById("renameInput").focus();
-    document.getElementById("renameCancel").onclick = () => renderAll();
+    document.getElementById("renameCancel").onclick = () => renderFromCache();
     document.getElementById("renameSave").onclick = () => saveRename(brand, document.getElementById("renameInput").value.trim());
     document.getElementById("renameInput").onkeydown = (e) => { if(e.key === "Enter") saveRename(brand, document.getElementById("renameInput").value.trim()); };
   };
   main.querySelectorAll(".tab").forEach(t => {
-    t.onclick = () => { activeBrandTab = t.dataset.tab; renderAll(); };
+    t.onclick = () => { activeBrandTab = t.dataset.tab; renderFromCache(); };
   });
 
   if(activeBrandTab === "status") await renderBrandStatus(brand, stock);
@@ -1300,7 +1301,7 @@ async function renderBrandPage(brand){
 }
 
 async function saveRename(oldName, newName){
-  if(!newName || newName === oldName){ renderAll(); return; }
+  if(!newName || newName === oldName){ renderFromCache(); return; }
   if(brands.includes(newName)){ showToast("Бренд с таким названием уже существует.", "warning"); return; }
   const idx = brands.indexOf(oldName);
   const th = await getThresholds(oldName);
@@ -1433,10 +1434,11 @@ async function renderBrandStatus(brand, stock){
   `;
 
   const sb = document.getElementById("searchBox");
-  if(sb) sb.oninput = (e) => {
+  const fullRows = Array.from(document.querySelectorAll("#fullBody tr"));
+  if(sb) sb.oninput = debounce((e) => {
     const q = e.target.value.toLowerCase().trim();
-    document.querySelectorAll("#fullBody tr").forEach(tr => { if(tr.dataset.search) tr.style.display = tr.dataset.search.includes(q) ? "" : "none"; });
-  };
+    fullRows.forEach(tr => { if(tr.dataset.search) tr.style.display = tr.dataset.search.includes(q) ? "" : "none"; });
+  }, 150);
 
   const exportStockBtn = document.getElementById("exportStockBtn");
   const exportShortageBtn = document.getElementById("exportShortageBtn");
@@ -1447,22 +1449,29 @@ async function renderBrandStatus(brand, stock){
     cb.onchange = async () => {
       const card = document.getElementById("watchCard-" + cb.dataset.idx);
       if(card) card.classList.toggle("watch-tint-1", cb.checked);
-      const th = await getThresholds(brand);
-      if(th[cb.dataset.artikul]){
-        th[cb.dataset.artikul].flag1 = cb.checked;
-        await saveThresholds(brand, th);
+      const art = cb.dataset.artikul;
+
+      // Update the in-memory caches directly instead of rebuilding the whole page:
+      // only the sidebar badge counts depend on flag1, so just re-render the sidebar.
+      const th = cachedThresholdsByBrand[brand];
+      if(th && th[art]){
+        th[art].flag1 = cb.checked;
+        const hits = cachedMap[normKey(art)] || [];
+        hits.forEach(h => { if(h.brand === brand) h.flag1 = cb.checked; });
+        saveThresholds(brand, th); // fire-and-forget: UI already reflects the change
       }
-      renderAll();
+      renderSidebar();
     };
   });
   document.querySelectorAll(".watch-check-2").forEach(cb => {
-    cb.onchange = async () => {
+    cb.onchange = () => {
       const card = document.getElementById("watchCard-" + cb.dataset.idx);
       if(card) card.classList.toggle("watch-tint-2", cb.checked);
-      const th = await getThresholds(brand);
-      if(th[cb.dataset.artikul]){
-        th[cb.dataset.artikul].flag2 = cb.checked;
-        await saveThresholds(brand, th);
+      const art = cb.dataset.artikul;
+      const th = cachedThresholdsByBrand[brand];
+      if(th && th[art]){
+        th[art].flag2 = cb.checked;
+        saveThresholds(brand, th); // purely visual flag — no re-render needed at all
       }
     };
   });
@@ -1550,12 +1559,13 @@ async function renderBrandThresholds(brand){
   `;
 
   const threshSearchBox = document.getElementById("threshSearchBox");
-  if(threshSearchBox) threshSearchBox.oninput = (e) => {
+  const threshRows = Array.from(document.querySelectorAll("#threshBody tr"));
+  if(threshSearchBox) threshSearchBox.oninput = debounce((e) => {
     const q = e.target.value.toLowerCase().trim();
-    document.querySelectorAll("#threshBody tr").forEach(tr => {
+    threshRows.forEach(tr => {
       if(tr.dataset.search !== undefined) tr.style.display = tr.dataset.search.includes(q) ? "" : "none";
     });
-  };
+  }, 150);
 
   document.querySelectorAll("#threshBody .notneeded-input").forEach(cb => {
     cb.onchange = () => {
@@ -1612,11 +1622,27 @@ async function renderBrandThresholds(brand){
   }
 }
 
+// Delays a handler until typing pauses, so filtering a long table doesn't run
+// on every single keystroke.
+function debounce(fn, ms){
+  let t;
+  return function(...args){
+    clearTimeout(t);
+    t = setTimeout(() => fn.apply(this, args), ms);
+  };
+}
+
+// Re-renders from the data already in memory — used for navigation (switching
+// brands/tabs), which doesn't need a fresh server round-trip.
+function renderFromCache(){
+  renderSidebar();
+  if(activePage === "home") renderHome();
+  else renderBrandPage(activePage);
+}
+
 async function renderAll(){
   await loadCoreData();
-  await renderSidebar();
-  if(activePage === "home") await renderHome();
-  else await renderBrandPage(activePage);
+  renderFromCache();
 }
 
 const THEME_KEY = "ui_theme";
