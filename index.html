@@ -901,6 +901,7 @@ async function processColumns(aIdx, qIdx, nIdx, sIdx){
 
   const stockData = { updatedAt: Date.now(), items, uploadedBy: currentUserName };
   await saveGlobalStock(stockData);
+  cachedStock = stockData;
   parsedRows = null; parsedHeaders = null;
   await renderHomeResults(stockData);
   await renderSidebar();
@@ -1072,11 +1073,11 @@ async function renderHomeResults(stock){
         count++;
       });
       if(count === 0){ showToast("Отметьте хотя бы один бренд для хотя бы одной строки.", "warning"); return; }
-      for(const brand of Object.keys(updates)){
+      await Promise.all(Object.keys(updates).map(async (brand) => {
         const th = await getThresholds(brand);
         Object.assign(th, updates[brand]);
         await saveThresholds(brand, th);
-      }
+      }));
       await saveIgnoredList(list);
       showToast(count + " артикулов привязано к брендам.", "success");
       renderAll();
@@ -1161,12 +1162,14 @@ async function renderHomeResults(stock){
         if(isIgnored) notNeededCount++;
       });
       if(count === 0 && ignoredCount === 0){ showToast("Ни одна строка не размечена.", "warning"); return; }
-      for(const brand of Object.keys(updates)){
-        const th = await getThresholds(brand);
-        Object.assign(th, updates[brand]);
-        await saveThresholds(brand, th);
-      }
-      if(ignoredCount > 0) await saveIgnoredList(ignoredList);
+      await Promise.all([
+        ...Object.keys(updates).map(async (brand) => {
+          const th = await getThresholds(brand);
+          Object.assign(th, updates[brand]);
+          await saveThresholds(brand, th);
+        }),
+        ignoredCount > 0 ? saveIgnoredList(ignoredList) : Promise.resolve()
+      ]);
       let msg = count + " артикулов распределено по брендам";
       if(notNeededCount > 0) msg += " (из них " + notNeededCount + " помечено как «не нужен»)";
       if(ignoredCount > 0) msg += ", " + ignoredCount + " без бренда помечено как ненужные";
