@@ -139,6 +139,33 @@ app.get('/api/kv-batch', async (req, res) => {
 
 app.get('/api/health', (req, res) => res.json({ ok: true, db: !!collection }));
 
+// --- Telegram notifications ------------------------------------------------
+// Credentials live in Render Environment Variables (TELEGRAM_BOT_TOKEN and
+// TELEGRAM_CHAT_ID) so the bot token is never exposed in the frontend code.
+
+app.post('/api/notify', async (req, res) => {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chatId) {
+    return res.json({ sent: false, reason: 'not_configured' });
+  }
+  try {
+    const text = String(req.body.text || '').slice(0, 4000);
+    if (!text) return res.json({ sent: false, reason: 'empty' });
+
+    const tgRes = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' })
+    });
+    const data = await tgRes.json();
+    if (!data.ok) return res.json({ sent: false, reason: data.description || 'telegram_error' });
+    res.json({ sent: true });
+  } catch (e) {
+    res.json({ sent: false, reason: e.message });
+  }
+});
+
 // --- Static frontend ------------------------------------------------------
 
 app.use(express.static(__dirname));
