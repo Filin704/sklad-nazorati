@@ -1343,7 +1343,8 @@ function exportBrandStock(brand, items){
   const data = items.map(it => ({
     "Артикул": it.artikul,
     "Наименование": it.name,
-    "Актуальное количество": it.currentQty
+    "Актуальное количество": it.currentQty,
+    "Сумма": (it.sum !== null && it.sum !== undefined) ? it.sum : ""
   }));
   const ws = XLSX.utils.json_to_sheet(data);
   const wb = XLSX.utils.book_new();
