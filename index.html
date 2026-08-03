@@ -1333,7 +1333,7 @@ async function renderBrandThresholds(brand){
   const entries = Object.entries(th);
 
   const rowsHtml = entries.map(([artikul, v]) => `
-    <tr data-artikul="${esc(artikul)}">
+    <tr data-artikul="${esc(artikul)}" data-search="${esc((artikul+" "+(v.name||"")).toLowerCase())}">
       <td class="mono">${esc(artikul)}</td>
       <td><input type="text" class="name-input" value="${esc(v.name || "")}" placeholder="наименование (не обязательно)"></td>
       <td style="width:110px;"><input type="number" class="min-input" min="0" value="${v.minQty}" ${v.notNeeded?'disabled':''}></td>
@@ -1351,13 +1351,24 @@ async function renderBrandThresholds(brand){
         <button class="btn secondary" id="addThreshRow">+ Добавить строку</button>
         <button class="btn" id="saveThresh">Сохранить</button>
       </div>
+      <input type="text" class="search-box" id="threshSearchBox" placeholder="Поиск по артикулу или наименованию...">
+      <div style="max-height:520px; overflow-y:auto;">
       <table>
         <thead><tr><th>Артикул</th><th>Наименование</th><th>Минимум</th><th>Заказать количество</th><th>Не нужен</th><th></th></tr></thead>
         <tbody id="threshBody">${rowsHtml}</tbody>
       </table>
+      </div>
       ${entries.length===0 ? `<div class="empty-state"><div class="big">🔧</div>Минимальные количества ещё не заданы.<br>Нажмите «Добавить строку» или сначала загрузите базу и привяжите позиции с «Главная».</div>` : ""}
     </div>
   `;
+
+  const threshSearchBox = document.getElementById("threshSearchBox");
+  if(threshSearchBox) threshSearchBox.oninput = (e) => {
+    const q = e.target.value.toLowerCase().trim();
+    document.querySelectorAll("#threshBody tr").forEach(tr => {
+      if(tr.dataset.search !== undefined) tr.style.display = tr.dataset.search.includes(q) ? "" : "none";
+    });
+  };
 
   document.querySelectorAll("#threshBody .notneeded-input").forEach(cb => {
     cb.onchange = () => {
