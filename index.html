@@ -266,6 +266,9 @@ select:focus{outline:none; border-color:var(--accent);}
 .watch-bar{ flex:1; height:5px; border-radius:6px; background:var(--border); overflow:hidden; }
 .watch-bar-fill{ height:100%; border-radius:6px; background:var(--warn); }
 .watch-nums{ font-family:var(--mono); font-size:10px; font-weight:600; color:var(--text); white-space:nowrap; }
+.watch-rate{ font-size:10.5px; color:var(--text-dim); margin-top:6px; line-height:1.35; }
+.watch-rate b{ color:var(--accent); }
+.watch-rate.muted{ color:var(--text-faint); font-style:italic; }
 .watch-nums .min{ color:var(--text-faint); font-weight:500; }
 
 .empty-state{text-align:center; padding:36px 20px; color:var(--text-faint); font-size:13px;}
@@ -397,6 +400,37 @@ const BRAND_LOGOS = {
 const BRANDS_KEY = "brands_list";
 const GLOBAL_STOCK_KEY = "stock__GLOBAL_MIXED";
 const IGNORED_KEY = "ignored_artikuls";
+const HISTORY_KEY = "stock_history";
+const HISTORY_MAX_DAYS = 120; // keep ~4 months of daily snapshots
+
+// History is stored compactly as { "YYYY-MM-DD": { ARTIKUL: qty, ... }, ... } so that
+// months of daily snapshots stay small enough for a single storage value.
+async function getHistory(){
+  try{ const res = await storage.get(HISTORY_KEY); return res ? JSON.parse(res.value) : {}; }
+  catch(e){ return {}; }
+}
+async function saveHistory(data){ await storage.set(HISTORY_KEY, JSON.stringify(data)); }
+
+function todayKey(){
+  const d = new Date();
+  return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+}
+
+// Records today's quantities into history, replacing today's entry if the base is
+// uploaded more than once in a day, and trimming anything older than HISTORY_MAX_DAYS.
+async function recordHistorySnapshot(items){
+  const hist = await getHistory();
+  const snap = {};
+  items.forEach(it => { snap[normKey(it.artikul)] = it.qty; });
+  hist[todayKey()] = snap;
+
+  const dates = Object.keys(hist).sort();
+  while(dates.length > HISTORY_MAX_DAYS){
+    delete hist[dates.shift()];
+  }
+  await saveHistory(hist);
+  return hist;
+}
 
 async function getIgnoredList(){
   try{ const res = await storage.get(IGNORED_KEY); return res ? JSON.parse(res.value) : {}; }
@@ -477,13 +511,14 @@ let cachedStock = null;
 let cachedMap = null;
 let cachedThresholdsByBrand = {};
 let cachedIgnoredList = {};
+let cachedHistory = {};
 
 // Loads everything the app needs to render (stock snapshot, every brand's threshold
-// registry, and the ignore list) in a SINGLE HTTP round-trip via the batch endpoint,
-// instead of one separate request per brand plus separate stock/ignore requests.
+// registry, the ignore list, and the history) in a SINGLE HTTP round-trip via the
+// batch endpoint, instead of one separate request per brand plus separate requests.
 async function loadCoreData(){
   const threshKeys = brands.map(b => threshKey(b));
-  const allKeys = [...threshKeys, GLOBAL_STOCK_KEY, IGNORED_KEY];
+  const allKeys = [...threshKeys, GLOBAL_STOCK_KEY, IGNORED_KEY, HISTORY_KEY];
 
   let values = {};
   try{
@@ -503,7 +538,65 @@ async function loadCoreData(){
   try{ cachedIgnoredList = values[IGNORED_KEY] ? JSON.parse(values[IGNORED_KEY]) : {}; }
   catch(e){ cachedIgnoredList = {}; }
 
+  try{ cachedHistory = values[HISTORY_KEY] ? JSON.parse(values[HISTORY_KEY]) : {}; }
+  catch(e){ cachedHistory = {}; }
+
   cachedMap = buildArtikulMapFromThresholds(cachedThresholdsByBrand);
+}
+
+// ---- Consumption analysis -------------------------------------------------
+// Estimates how fast an artikul is being used up, based on the daily history
+// snapshots. Only DECREASES count as consumption; increases mean a restock
+// arrived, so those are skipped rather than cancelling out real usage.
+const TARGET_COVER_DAYS = 30; // order enough to cover roughly one month
+
+function analyzeConsumption(artikulKey){
+  const dates = Object.keys(cachedHistory).sort();
+  if(dates.length < 2) return null;
+
+  let totalUsed = 0;
+  let spanDays = 0;
+  let prevQty = null;
+  let prevDate = null;
+
+  dates.forEach(d => {
+    const q = cachedHistory[d][artikulKey];
+    if(q === undefined) return;
+    if(prevQty !== null){
+      const dayGap = Math.max(1, Math.round((new Date(d) - new Date(prevDate)) / 86400000));
+      if(q < prevQty) totalUsed += (prevQty - q);
+      spanDays += dayGap;
+    }
+    prevQty = q;
+    prevDate = d;
+  });
+
+  if(spanDays < 1 || totalUsed <= 0) return null;
+
+  const perDay = totalUsed / spanDays;
+  return {
+    perDay,
+    perMonth: perDay * 30,
+    totalUsed,
+    spanDays,
+    dataPoints: dates.length
+  };
+}
+
+// Suggests an order size: enough to cover TARGET_COVER_DAYS of usage, minus what's
+// already on the shelf, but never below the configured minimum level.
+function recommendOrder(artikulKey, currentQty, minQty){
+  const c = analyzeConsumption(artikulKey);
+  if(!c) return null;
+  const needed = Math.ceil(c.perDay * TARGET_COVER_DAYS);
+  const target = Math.max(needed, minQty || 0);
+  const suggestion = Math.max(0, target - currentQty);
+  return { ...c, suggestion, target };
+}
+
+function formatRate(perMonth){
+  if(perMonth >= 10) return Math.round(perMonth) + " шт/мес";
+  return perMonth.toFixed(1).replace(".0","") + " шт/мес";
 }
 
 async function renderSidebar(){
@@ -966,6 +1059,61 @@ function renderColumnMap(){
 }
 
 
+// Builds a per-brand shortage summary and sends it to Telegram (if the bot is
+// configured on the server). Runs after an upload so the manager gets the
+// day's picture without opening the site.
+async function sendTelegramSummary(){
+  const lines = [];
+  let total = 0;
+
+  brands.forEach(b => {
+    const th = cachedThresholdsByBrand[b] || {};
+    const stockMap = {};
+    if(cachedStock) cachedStock.items.forEach(it => { stockMap[normKey(it.artikul)] = it; });
+
+    const short = Object.keys(th).filter(art => {
+      const t = th[art];
+      if(t.notNeeded || t.flag1) return false;
+      const si = stockMap[normKey(art)];
+      const qty = si ? si.qty : 0;
+      return qty <= t.minQty;
+    }).map(art => {
+      const t = th[art];
+      const si = stockMap[normKey(art)];
+      const qty = si ? si.qty : 0;
+      const rec = recommendOrder(normKey(art), qty, t.minQty);
+      return { art, name: t.name || (si ? si.name : ""), qty, minQty: t.minQty, rec };
+    }).sort((a,b2) => (a.qty - a.minQty) - (b2.qty - b2.minQty));
+
+    if(short.length === 0) return;
+    total += short.length;
+
+    lines.push(`\n<b>${b}</b> — ${short.length}`);
+    short.slice(0, 15).forEach(s => {
+      const recTxt = s.rec ? ` · заказать ~${s.rec.suggestion}` : "";
+      lines.push(`• ${s.name || s.art} (${s.art}): ${s.qty}/${s.minQty}${recTxt}`);
+    });
+    if(short.length > 15) lines.push(`… и ещё ${short.length - 15}`);
+  });
+
+  const header = total > 0
+    ? `📦 <b>Склад обновлён</b>${currentUserName ? " · " + currentUserName : ""}\nНиже минимума: <b>${total}</b>`
+    : `📦 <b>Склад обновлён</b>${currentUserName ? " · " + currentUserName : ""}\n✅ Все позиции в норме`;
+
+  const text = header + lines.join("\n");
+
+  try{
+    const res = await fetch('/api/notify', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ text })
+    });
+    const data = await res.json();
+    if(data.sent) showToast("Уведомление отправлено в Telegram.", "success");
+    else if(data.reason !== 'not_configured') showToast("Telegram: " + data.reason, "warning");
+  }catch(e){ /* notification is best-effort; never block the upload */ }
+}
+
 async function processColumns(aIdx, qIdx, nIdx, sIdx){
   sIdx = (sIdx === undefined) ? -1 : sIdx;
   const items = [];
@@ -988,11 +1136,14 @@ async function processColumns(aIdx, qIdx, nIdx, sIdx){
   const stockData = { updatedAt: Date.now(), items, uploadedBy: currentUserName };
   await saveGlobalStock(stockData);
   cachedStock = stockData;
+  cachedHistory = await recordHistorySnapshot(items);
   parsedRows = null; parsedHeaders = null;
   await renderHomeResults(stockData);
   await renderSidebar();
   const ua = document.getElementById("updatedAt");
   if(ua) ua.textContent = "Последняя загрузка: " + new Date(stockData.updatedAt).toLocaleString("ru-RU") + (stockData.uploadedBy ? " · " + esc(stockData.uploadedBy) : "");
+
+  sendTelegramSummary();
 }
 
 async function renderHomeResults(stock){
@@ -1370,6 +1521,10 @@ async function renderBrandStatus(brand, stock){
             const pct = s.minQty > 0 ? Math.round(Math.min(s.currentQty/s.minQty,1)*100) : 0;
             const numClass = pct < 50 ? 'crit' : 'warn';
             const tintClass = (s.flag1 ? ' watch-tint-1' : '') + (s.flag2 ? ' watch-tint-2' : '');
+            const rec = recommendOrder(normKey(s.artikul), s.currentQty, s.minQty);
+            const recHtml = rec
+              ? `<div class="watch-rate">📉 ${formatRate(rec.perMonth)} · рекомендуем заказать <b>${rec.suggestion}</b></div>`
+              : `<div class="watch-rate muted">нет данных о расходе</div>`;
             return `
             <div class="watch-card${tintClass}" id="watchCard-${sIdx}">
               <div class="watch-num-block">
@@ -1387,6 +1542,7 @@ async function renderBrandStatus(brand, stock){
                   <div class="watch-bar"><div class="watch-bar-fill" style="width:${pct}%; background:${pct<34?'var(--danger)':'var(--warn)'};"></div></div>
                   <div class="watch-nums">${s.currentQty} <span class="min">/ ${s.minQty}</span></div>
                 </div>
+                ${recHtml}
               </div>
             </div>`;
           }).join("")}
