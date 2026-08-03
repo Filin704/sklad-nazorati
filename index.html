@@ -368,7 +368,7 @@ async function buildArtikulMap(){
     Object.keys(th).forEach(art => {
       const k = normKey(art);
       if(!map[k]) map[k] = [];
-      map[k].push({ brand: b, artikul: art, name: th[art].name, minQty: th[art].minQty, orderQty: th[art].orderQty || 0, notNeeded: !!th[art].notNeeded });
+      map[k].push({ brand: b, artikul: art, name: th[art].name, minQty: th[art].minQty, orderQty: th[art].orderQty || 0, notNeeded: !!th[art].notNeeded, flag1: !!th[art].flag1 });
     });
   });
   return map;
@@ -396,7 +396,7 @@ async function renderSidebar(){
     stock.items.forEach(it => {
       const hits = map[normKey(it.artikul)] || [];
       hits.forEach(hit => {
-        (stockByBrand[hit.brand] = stockByBrand[hit.brand] || []).push({...it, minQty:hit.minQty, notNeeded:hit.notNeeded});
+        (stockByBrand[hit.brand] = stockByBrand[hit.brand] || []).push({...it, minQty:hit.minQty, notNeeded:hit.notNeeded, flag1:hit.flag1});
       });
     });
   }
@@ -404,7 +404,7 @@ async function renderSidebar(){
   list.innerHTML = "";
   brands.forEach(b => {
     const items = stockByBrand[b] || [];
-    const shortages = items.filter(it => !it.notNeeded && it.qty <= it.minQty).length;
+    const shortages = items.filter(it => !it.notNeeded && !it.flag1 && it.qty <= it.minQty).length;
     const li = document.createElement("li");
     li.className = "brand-item" + (b === activePage ? " active" : "");
     li.innerHTML = `<span>${esc(b)}</span>` + (shortages > 0 ? `<span class="brand-count has-shortage">${shortages}</span>` : "");
@@ -871,7 +871,7 @@ async function renderHomeResults(stock){
   stock.items.forEach(it => {
     const hits = map[normKey(it.artikul)] || [];
     if(hits.length > 0){
-      hits.forEach(hit => brandGroups[hit.brand].push({...it, minQty: hit.minQty, registeredName: hit.name, notNeeded: hit.notNeeded}));
+      hits.forEach(hit => brandGroups[hit.brand].push({...it, minQty: hit.minQty, registeredName: hit.name, notNeeded: hit.notNeeded, flag1: hit.flag1}));
     } else if(ignoredList[normKey(it.artikul)]){
     } else {
       unclassified.push(it);
@@ -881,7 +881,7 @@ async function renderHomeResults(stock){
   let totalShortages = 0;
   const cardsHtml = brands.map(b => {
     const items = brandGroups[b];
-    const shortages = items.filter(it => !it.notNeeded && it.qty <= it.minQty).length;
+    const shortages = items.filter(it => !it.notNeeded && !it.flag1 && it.qty <= it.minQty).length;
     totalShortages += shortages;
     return `
       <div class="brand-card" data-brand="${esc(b)}">
@@ -1193,7 +1193,7 @@ async function renderBrandStatus(brand, stock){
     return {
       artikul, name: t.name || (stockItem ? stockItem.name : ""),
       minQty: t.minQty, orderQty: t.orderQty || 0, currentQty: stockItem ? stockItem.qty : 0,
-      notNeeded: !!t.notNeeded, found: !!stockItem
+      notNeeded: !!t.notNeeded, flag1: !!t.flag1, flag2: !!t.flag2, found: !!stockItem
     };
   });
 
@@ -1229,14 +1229,15 @@ async function renderBrandStatus(brand, stock){
           ${shortages.map((s, sIdx) => {
             const pct = s.minQty > 0 ? Math.round(Math.min(s.currentQty/s.minQty,1)*100) : 0;
             const numClass = pct < 50 ? 'crit' : 'warn';
+            const tintClass = (s.flag1 ? ' watch-tint-1' : '') + (s.flag2 ? ' watch-tint-2' : '');
             return `
-            <div class="watch-card" id="watchCard-${sIdx}">
+            <div class="watch-card${tintClass}" id="watchCard-${sIdx}">
               <div class="watch-num-block">
                 <div class="watch-num ${numClass}">${s.currentQty}</div>
                 <div class="watch-num-label">ЕСТЬ НА СКЛАДЕ</div>
                 <div class="watch-check-row">
-                  <input type="checkbox" class="watch-check watch-check-1" data-idx="${sIdx}" title="Отметка 1">
-                  <input type="checkbox" class="watch-check watch-check-2" data-idx="${sIdx}" title="Отметка 2">
+                  <input type="checkbox" class="watch-check watch-check-1" data-idx="${sIdx}" data-artikul="${esc(s.artikul)}" title="Заказано — уберёт из общих уведомлений" ${s.flag1?'checked':''}>
+                  <input type="checkbox" class="watch-check watch-check-2" data-idx="${sIdx}" data-artikul="${esc(s.artikul)}" title="Отметка (только визуальная)" ${s.flag2?'checked':''}>
                 </div>
               </div>
               <div class="watch-body">
@@ -1289,15 +1290,26 @@ async function renderBrandStatus(brand, stock){
   if(exportShortageBtn) exportShortageBtn.onclick = () => exportBrandShortages(brand, shortages);
 
   document.querySelectorAll(".watch-check-1").forEach(cb => {
-    cb.onchange = () => {
+    cb.onchange = async () => {
       const card = document.getElementById("watchCard-" + cb.dataset.idx);
       if(card) card.classList.toggle("watch-tint-1", cb.checked);
+      const th = await getThresholds(brand);
+      if(th[cb.dataset.artikul]){
+        th[cb.dataset.artikul].flag1 = cb.checked;
+        await saveThresholds(brand, th);
+      }
+      renderAll();
     };
   });
   document.querySelectorAll(".watch-check-2").forEach(cb => {
-    cb.onchange = () => {
+    cb.onchange = async () => {
       const card = document.getElementById("watchCard-" + cb.dataset.idx);
       if(card) card.classList.toggle("watch-tint-2", cb.checked);
+      const th = await getThresholds(brand);
+      if(th[cb.dataset.artikul]){
+        th[cb.dataset.artikul].flag2 = cb.checked;
+        await saveThresholds(brand, th);
+      }
     };
   });
 }
@@ -1424,7 +1436,8 @@ async function renderBrandThresholds(brand){
       const orderQty = parseFloat(tr.querySelector(".order-input").value);
       const notNeeded = tr.querySelector(".notneeded-input").checked;
       if(!artikul){ hasError = true; return; }
-      newTh[artikul] = { name, minQty: isNaN(minQty)?0:minQty, orderQty: isNaN(orderQty)?0:orderQty, notNeeded };
+      const prev = th[artikul] || {};
+      newTh[artikul] = { name, minQty: isNaN(minQty)?0:minQty, orderQty: isNaN(orderQty)?0:orderQty, notNeeded, flag1: !!prev.flag1, flag2: !!prev.flag2 };
     });
     if(hasError){ showToast("В каждой строке должен быть указан артикул.", "error"); return; }
     await saveThresholds(brand, newTh);
