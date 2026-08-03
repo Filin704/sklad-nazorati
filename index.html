@@ -360,15 +360,28 @@ async function saveGlobalStock(data){ await storage.set(GLOBAL_STOCK_KEY, JSON.s
 
 async function buildArtikulMap(){
   const map = {};
-  for(const b of brands){
-    const th = await getThresholds(b);
+  // Fetch all brands' thresholds in PARALLEL instead of one-at-a-time — with many
+  // brands this turns N sequential network round-trips into a single batch.
+  const allThresholds = await Promise.all(brands.map(b => getThresholds(b)));
+  brands.forEach((b, i) => {
+    const th = allThresholds[i];
     Object.keys(th).forEach(art => {
       const k = normKey(art);
       if(!map[k]) map[k] = [];
       map[k].push({ brand: b, artikul: art, name: th[art].name, minQty: th[art].minQty, orderQty: th[art].orderQty || 0, notNeeded: !!th[art].notNeeded });
     });
-  }
+  });
   return map;
+}
+
+// Cached once per renderAll() cycle (see loadCoreData) so that switching between
+// brands/pages doesn't re-fetch the same stock snapshot and threshold registries
+// multiple times over the network.
+let cachedStock = null;
+let cachedMap = null;
+
+async function loadCoreData(){
+  [cachedStock, cachedMap] = await Promise.all([getGlobalStock(), buildArtikulMap()]);
 }
 
 async function renderSidebar(){
@@ -376,8 +389,8 @@ async function renderSidebar(){
   document.getElementById("homeNavItem").onclick = () => { activePage = "home"; renderAll(); };
 
   const list = document.getElementById("brandList");
-  const stock = await getGlobalStock();
-  const map = await buildArtikulMap();
+  const stock = cachedStock;
+  const map = cachedMap;
   const stockByBrand = {};
   if(stock){
     stock.items.forEach(it => {
@@ -422,7 +435,7 @@ document.getElementById("addBrandSave").onclick = async () => {
 
 async function renderHome(){
   const main = document.getElementById("main");
-  const stock = await getGlobalStock();
+  const stock = cachedStock;
 
   main.innerHTML = `
     <div class="main-header">
@@ -479,16 +492,17 @@ async function searchArtikul(query){
   const ignoredHit = Object.keys(ignoredList).find(k => k.includes(nq)) || null;
 
   const matches = [];
-  for(const b of brands){
-    const th = await getThresholds(b);
+  const allThresholds = await Promise.all(brands.map(b => getThresholds(b)));
+  brands.forEach((b, i) => {
+    const th = allThresholds[i];
     Object.keys(th).forEach(art => {
       if(normKey(art).includes(nq)){
         matches.push({ brand: b, artikul: art, name: th[art].name, minQty: th[art].minQty });
       }
     });
-  }
+  });
 
-  const stock = await getGlobalStock();
+  const stock = cachedStock || await getGlobalStock();
   let stockItem = null;
   if(stock) stockItem = stock.items.find(it => normKey(it.artikul).includes(nq));
 
@@ -847,7 +861,7 @@ async function processColumns(aIdx, qIdx, nIdx){
 
 async function renderHomeResults(stock){
   const container = document.getElementById("homeResults");
-  const map = await buildArtikulMap();
+  const map = cachedMap;
   const ignoredList = await getIgnoredList();
 
   const brandGroups = {};
@@ -1115,7 +1129,7 @@ async function renderHomeResults(stock){
 
 async function renderBrandPage(brand){
   const main = document.getElementById("main");
-  const stock = await getGlobalStock();
+  const stock = cachedStock;
 
   main.innerHTML = `
     <div class="main-header">
@@ -1425,6 +1439,7 @@ async function renderBrandThresholds(brand){
 }
 
 async function renderAll(){
+  await loadCoreData();
   await renderSidebar();
   if(activePage === "home") await renderHome();
   else await renderBrandPage(activePage);
