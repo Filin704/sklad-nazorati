@@ -440,6 +440,8 @@ async function renderHome(){
       <div id="artikulSearchResults"></div>
     </div>
 
+    <div id="homeResults"></div>
+
     <div class="panel">
       <h3>Загрузка ежедневной базы (все бренды вместе)</h3>
       <p class="hint">Загрузите Excel (.xlsx, .xls) или CSV файл с остатками по всем брендам сразу — вперемешку. Система сама распределит позиции по брендам на основе артикула, используя список минимальных количеств, который вы задали для каждого бренда.</p>
@@ -450,8 +452,6 @@ async function renderHome(){
       <input type="file" id="fileInput" accept=".xlsx,.xls,.csv">
       <div id="mapArea"></div>
     </div>
-
-    <div id="homeResults"></div>
   `;
 
   const searchBtn = document.getElementById("artikulSearchBtn");
