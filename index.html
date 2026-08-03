@@ -301,6 +301,14 @@ const storage = {
     const res = await fetch('/api/kv?prefix=' + encodeURIComponent(prefix || ''));
     if(!res.ok) return null;
     return res.json();
+  },
+  // Fetches multiple keys in a single HTTP round-trip instead of one request per key.
+  async getBatch(keys){
+    if(!keys || keys.length === 0) return {};
+    const res = await fetch('/api/kv-batch?keys=' + encodeURIComponent(keys.join(',')));
+    if(!res.ok) return {};
+    const data = await res.json();
+    return data.values || {};
   }
 };
 
@@ -358,13 +366,10 @@ async function getGlobalStock(){
 }
 async function saveGlobalStock(data){ await storage.set(GLOBAL_STOCK_KEY, JSON.stringify(data)); }
 
-async function buildArtikulMap(){
+function buildArtikulMapFromThresholds(thresholdsByBrand){
   const map = {};
-  // Fetch all brands' thresholds in PARALLEL instead of one-at-a-time — with many
-  // brands this turns N sequential network round-trips into a single batch.
-  const allThresholds = await Promise.all(brands.map(b => getThresholds(b)));
-  brands.forEach((b, i) => {
-    const th = allThresholds[i];
+  brands.forEach(b => {
+    const th = thresholdsByBrand[b] || {};
     Object.keys(th).forEach(art => {
       const k = normKey(art);
       if(!map[k]) map[k] = [];
@@ -374,14 +379,49 @@ async function buildArtikulMap(){
   return map;
 }
 
+// Kept for callers that need a single brand's fresh thresholds outside the batch cache
+// (e.g. read-modify-write save flows), and as a fallback if the batch load fails.
+async function buildArtikulMap(){
+  const allThresholds = await Promise.all(brands.map(b => getThresholds(b)));
+  const byBrand = {};
+  brands.forEach((b, i) => { byBrand[b] = allThresholds[i]; });
+  return buildArtikulMapFromThresholds(byBrand);
+}
+
 // Cached once per renderAll() cycle (see loadCoreData) so that switching between
 // brands/pages doesn't re-fetch the same stock snapshot and threshold registries
 // multiple times over the network.
 let cachedStock = null;
 let cachedMap = null;
+let cachedThresholdsByBrand = {};
+let cachedIgnoredList = {};
 
+// Loads everything the app needs to render (stock snapshot, every brand's threshold
+// registry, and the ignore list) in a SINGLE HTTP round-trip via the batch endpoint,
+// instead of one separate request per brand plus separate stock/ignore requests.
 async function loadCoreData(){
-  [cachedStock, cachedMap] = await Promise.all([getGlobalStock(), buildArtikulMap()]);
+  const threshKeys = brands.map(b => threshKey(b));
+  const allKeys = [...threshKeys, GLOBAL_STOCK_KEY, IGNORED_KEY];
+
+  let values = {};
+  try{
+    values = await storage.getBatch(allKeys);
+  }catch(e){ values = {}; }
+
+  cachedThresholdsByBrand = {};
+  brands.forEach((b, i) => {
+    const raw = values[threshKeys[i]];
+    try{ cachedThresholdsByBrand[b] = raw ? JSON.parse(raw) : {}; }
+    catch(e){ cachedThresholdsByBrand[b] = {}; }
+  });
+
+  try{ cachedStock = values[GLOBAL_STOCK_KEY] ? JSON.parse(values[GLOBAL_STOCK_KEY]) : null; }
+  catch(e){ cachedStock = null; }
+
+  try{ cachedIgnoredList = values[IGNORED_KEY] ? JSON.parse(values[IGNORED_KEY]) : {}; }
+  catch(e){ cachedIgnoredList = {}; }
+
+  cachedMap = buildArtikulMapFromThresholds(cachedThresholdsByBrand);
 }
 
 async function renderSidebar(){
@@ -871,7 +911,7 @@ async function processColumns(aIdx, qIdx, nIdx, sIdx){
 async function renderHomeResults(stock){
   const container = document.getElementById("homeResults");
   const map = cachedMap;
-  const ignoredList = await getIgnoredList();
+  const ignoredList = cachedIgnoredList;
 
   const brandGroups = {};
   brands.forEach(b => brandGroups[b] = []);
@@ -1185,7 +1225,7 @@ async function saveRename(oldName, newName){
 
 async function renderBrandStatus(brand, stock){
   const el = document.getElementById("brandTabContent");
-  const thresholds = await getThresholds(brand);
+  const thresholds = cachedThresholdsByBrand[brand] || {};
   const thKeys = Object.keys(thresholds);
 
   if(!stock){
@@ -1373,7 +1413,7 @@ function exportBrandShortages(brand, shortages){
 
 async function renderBrandThresholds(brand){
   const el = document.getElementById("brandTabContent");
-  const th = await getThresholds(brand);
+  const th = cachedThresholdsByBrand[brand] || {};
   const entries = Object.entries(th);
 
   const rowsHtml = entries.map(([artikul, v]) => `
