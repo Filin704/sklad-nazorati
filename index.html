@@ -269,6 +269,7 @@ select:focus{outline:none; border-color:var(--accent);}
 .watch-rate{ font-size:10.5px; color:var(--text-dim); margin-top:6px; line-height:1.35; }
 .watch-rate b{ color:var(--accent); }
 .watch-rate.muted{ color:var(--text-faint); font-style:italic; }
+.watch-rate-meta{ display:block; color:var(--text-faint); font-size:9.5px; margin-top:2px; }
 .watch-nums .min{ color:var(--text-faint); font-weight:500; }
 
 .empty-state{text-align:center; padding:36px 20px; color:var(--text-faint); font-size:13px;}
@@ -546,52 +547,78 @@ async function loadCoreData(){
 
 // ---- Consumption analysis -------------------------------------------------
 // Estimates how fast an artikul is being used up, based on the daily history
-// snapshots. Only DECREASES count as consumption; increases mean a restock
-// arrived, so those are skipped rather than cancelling out real usage.
-const TARGET_COVER_DAYS = 30; // order enough to cover roughly one month
+// snapshots. Deliberately CONSERVATIVE: a couple of days of history can't
+// produce a confident monthly rate, and one-off corrections (inventory fixes,
+// transfers between warehouses) must not be mistaken for real sales.
+const TARGET_COVER_DAYS = 30;   // order enough to cover roughly one month
+const MIN_OBSERVED_DAYS = 7;    // need at least a week of history to say anything
+const MIN_DATA_POINTS = 3;      // and at least 3 separate snapshots
 
 function analyzeConsumption(artikulKey){
   const dates = Object.keys(cachedHistory).sort();
-  if(dates.length < 2) return null;
+  if(dates.length < MIN_DATA_POINTS) return null;
 
-  let totalUsed = 0;
-  let spanDays = 0;
-  let prevQty = null;
-  let prevDate = null;
-
+  // Collect only the days where this artikul actually appears.
+  const points = [];
   dates.forEach(d => {
     const q = cachedHistory[d][artikulKey];
-    if(q === undefined) return;
-    if(prevQty !== null){
-      const dayGap = Math.max(1, Math.round((new Date(d) - new Date(prevDate)) / 86400000));
-      if(q < prevQty) totalUsed += (prevQty - q);
-      spanDays += dayGap;
-    }
-    prevQty = q;
-    prevDate = d;
+    if(q !== undefined) points.push({ date: d, qty: q });
   });
+  if(points.length < MIN_DATA_POINTS) return null;
 
-  if(spanDays < 1 || totalUsed <= 0) return null;
+  // Real elapsed calendar time from first to last observation. Using this
+  // (instead of summing per-step gaps) prevents several uploads in one day
+  // from inflating the rate.
+  const firstDate = new Date(points[0].date);
+  const lastDate = new Date(points[points.length - 1].date);
+  const observedDays = Math.round((lastDate - firstDate) / 86400000);
+  if(observedDays < MIN_OBSERVED_DAYS) return null;
 
-  const perDay = totalUsed / spanDays;
+  let totalUsed = 0;
+  for(let i = 1; i < points.length; i++){
+    const prev = points[i-1].qty;
+    const cur = points[i].qty;
+    if(cur >= prev) continue; // restock or unchanged — not consumption
+
+    const drop = prev - cur;
+    // Guard against inventory corrections / transfers being read as sales:
+    // ignore a single drop that wipes out more than 80% of the stock at once
+    // when the remaining quantity is near zero.
+    const gapDays = Math.max(1, Math.round((new Date(points[i].date) - new Date(points[i-1].date)) / 86400000));
+    const dropPerDay = drop / gapDays;
+    if(prev > 0 && drop / prev > 0.8 && cur <= 1 && dropPerDay > 5) continue;
+
+    totalUsed += drop;
+  }
+
+  if(totalUsed <= 0) return null;
+
+  const perDay = totalUsed / observedDays;
   return {
     perDay,
     perMonth: perDay * 30,
     totalUsed,
-    spanDays,
-    dataPoints: dates.length
+    spanDays: observedDays,
+    dataPoints: points.length
   };
 }
 
 // Suggests an order size: enough to cover TARGET_COVER_DAYS of usage, minus what's
-// already on the shelf, but never below the configured minimum level.
+// already on the shelf, but never below the configured minimum level. The result is
+// capped relative to the minimum so a noisy estimate can't suggest absurd quantities.
 function recommendOrder(artikulKey, currentQty, minQty){
   const c = analyzeConsumption(artikulKey);
   if(!c) return null;
   const needed = Math.ceil(c.perDay * TARGET_COVER_DAYS);
-  const target = Math.max(needed, minQty || 0);
-  const suggestion = Math.max(0, target - currentQty);
-  return { ...c, suggestion, target };
+  let target = Math.max(needed, minQty || 0);
+
+  // Safety cap: never propose more than 10x the minimum level (or 10x observed
+  // usage if no minimum is set). Protects against short-history overestimates.
+  const cap = (minQty && minQty > 0) ? minQty * 10 : Math.max(c.totalUsed, 10);
+  if(target > cap) target = cap;
+
+  const suggestion = Math.max(0, Math.round(target - currentQty));
+  return { ...c, suggestion, target, capped: needed > cap };
 }
 
 function formatRate(perMonth){
@@ -1523,7 +1550,7 @@ async function renderBrandStatus(brand, stock){
             const tintClass = (s.flag1 ? ' watch-tint-1' : '') + (s.flag2 ? ' watch-tint-2' : '');
             const rec = recommendOrder(normKey(s.artikul), s.currentQty, s.minQty);
             const recHtml = rec
-              ? `<div class="watch-rate">📉 ${formatRate(rec.perMonth)} · рекомендуем заказать <b>${rec.suggestion}</b></div>`
+              ? `<div class="watch-rate">📉 ${formatRate(rec.perMonth)} · заказать <b>${rec.suggestion}</b><span class="watch-rate-meta">по данным за ${rec.spanDays} дн.${rec.capped ? " · оценка ограничена" : ""}</span></div>`
               : `<div class="watch-rate muted">нет данных о расходе</div>`;
             return `
             <div class="watch-card${tintClass}" id="watchCard-${sIdx}">
