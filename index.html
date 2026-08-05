@@ -1675,7 +1675,13 @@ function formatSum(n){
 // in the browser (no server involved) using the SheetJS library already loaded on the page.
 function exportBrandStock(brand, items){
   if(!items || items.length === 0){ showToast("Нет данных для экспорта — список пуст.", "warning"); return; }
-  const data = items.map(it => ({
+
+  // A stock listing should only contain what's actually on the shelf, so items
+  // with zero quantity are left out of this export.
+  const inStock = items.filter(it => Number(it.currentQty) > 0);
+  if(inStock.length === 0){ showToast("Нет позиций с остатком больше нуля.", "warning"); return; }
+
+  const data = inStock.map(it => ({
     "Артикул": it.artikul,
     "Наименование": it.name,
     "Актуальное количество": it.currentQty,
@@ -1686,7 +1692,7 @@ function exportBrandStock(brand, items){
   XLSX.utils.book_append_sheet(wb, ws, "Sklad");
   const dateStr = new Date().toISOString().slice(0,10);
   XLSX.writeFile(wb, sanitizeFilename(brand) + "_sklad_" + dateStr + ".xlsx");
-  showToast("Файл скачивается...", "success");
+  showToast("Файл скачивается... (" + inStock.length + " позиций)", "success");
 }
 
 // Exports only the items currently below their minimum quantity for this brand.
