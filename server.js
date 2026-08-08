@@ -1,6 +1,7 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { MongoClient } = require('mongodb');
 
 const app = express();
@@ -93,6 +94,116 @@ async function kvListKeys(prefix) {
   const store = loadFileStore();
   return Object.keys(store).filter(k => k.startsWith(prefix));
 }
+
+// --- Authentication --------------------------------------------------------
+// Users come from the APP_USERS environment variable, formatted as:
+//   login1:password1,login2:password2
+// Passwords are never stored or compared in plain text at request time — they're
+// hashed once at startup and compared using a timing-safe comparison.
+
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const sessions = new Map(); // token -> { login, expires }
+
+function hashPassword(pw) {
+  return crypto.createHash('sha256').update(String(pw)).digest('hex');
+}
+
+function parseUsers() {
+  const raw = process.env.APP_USERS || '';
+  const users = {};
+  raw.split(',').forEach(pair => {
+    const idx = pair.indexOf(':');
+    if (idx < 1) return;
+    const login = pair.slice(0, idx).trim();
+    const pw = pair.slice(idx + 1).trim();
+    if (login && pw) users[login.toLowerCase()] = hashPassword(pw);
+  });
+  return users;
+}
+
+const USERS = parseUsers();
+const AUTH_ENABLED = Object.keys(USERS).length > 0;
+
+if (!AUTH_ENABLED) {
+  console.log('APP_USERS не задан — вход в систему ОТКЛЮЧЁН (сайт доступен всем).');
+} else {
+  console.log('Авторизация включена. Пользователей: ' + Object.keys(USERS).length);
+}
+
+function safeEqual(a, b) {
+  const bufA = Buffer.from(String(a));
+  const bufB = Buffer.from(String(b));
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function createSession(login) {
+  const token = crypto.randomBytes(32).toString('hex');
+  sessions.set(token, { login, expires: Date.now() + SESSION_TTL_MS });
+  return token;
+}
+
+function getSession(req) {
+  const cookie = req.headers.cookie || '';
+  const match = cookie.match(/(?:^|;\s*)sklad_session=([^;]+)/);
+  if (!match) return null;
+  const s = sessions.get(match[1]);
+  if (!s) return null;
+  if (s.expires < Date.now()) { sessions.delete(match[1]); return null; }
+  return { token: match[1], ...s };
+}
+
+// Periodically drop expired sessions so the map doesn't grow without bound.
+setInterval(() => {
+  const now = Date.now();
+  for (const [t, s] of sessions) if (s.expires < now) sessions.delete(t);
+}, 60 * 60 * 1000);
+
+app.post('/api/login', (req, res) => {
+  if (!AUTH_ENABLED) return res.json({ ok: true, login: 'guest', authDisabled: true });
+
+  const login = String(req.body.login || '').trim().toLowerCase();
+  const password = String(req.body.password || '');
+  const expected = USERS[login];
+
+  // Always run a comparison so a wrong login and a wrong password take the same
+  // amount of time, which avoids leaking which logins exist.
+  const provided = hashPassword(password);
+  const ok = expected ? safeEqual(expected, provided) : false;
+
+  if (!ok) return res.status(401).json({ ok: false, error: 'Неверный логин или пароль' });
+
+  const token = createSession(login);
+  res.setHeader('Set-Cookie',
+    `sklad_session=${token}; HttpOnly; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}; SameSite=Lax`);
+  res.json({ ok: true, login });
+});
+
+app.post('/api/logout', (req, res) => {
+  const s = getSession(req);
+  if (s) sessions.delete(s.token);
+  res.setHeader('Set-Cookie', 'sklad_session=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax');
+  res.json({ ok: true });
+});
+
+app.get('/api/me', (req, res) => {
+  if (!AUTH_ENABLED) return res.json({ authenticated: true, login: 'guest', authDisabled: true });
+  const s = getSession(req);
+  if (!s) return res.status(401).json({ authenticated: false });
+  res.json({ authenticated: true, login: s.login });
+});
+
+// Guards every data endpoint below. Registered before the API routes so an
+// unauthenticated request can never reach the storage layer.
+function requireAuth(req, res, next) {
+  if (!AUTH_ENABLED) return next();
+  if (getSession(req)) return next();
+  res.status(401).json({ error: 'unauthorized' });
+}
+
+app.use('/api/kv', requireAuth);
+app.use('/api/kv-batch', requireAuth);
+app.use('/api/notify', requireAuth);
 
 // --- API ----------------------------------------------------------------
 
