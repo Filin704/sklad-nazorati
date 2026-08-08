@@ -92,6 +92,45 @@
 .theme-toggle button.active{ background:var(--panel); color:var(--accent); }
 :root[data-theme="light"] .theme-toggle button.active{ box-shadow:0 1px 3px rgba(0,0,0,.08); }
 *{box-sizing:border-box;}
+
+/* ---- Login screen ---- */
+.login-screen{
+  position:fixed; inset:0; z-index:20000;
+  display:flex; align-items:center; justify-content:center;
+  background:var(--bg); padding:20px;
+}
+.login-box{
+  width:100%; max-width:360px;
+  background:var(--panel); border:1px solid var(--border);
+  border-radius:12px; padding:28px 26px;
+  box-shadow:0 20px 50px var(--shadow);
+}
+.login-eyebrow{
+  font-family:var(--display); font-size:10.5px; letter-spacing:.12em;
+  text-transform:uppercase; color:var(--accent); font-weight:700;
+}
+.login-title{
+  font-family:var(--display); font-size:22px; font-weight:800;
+  letter-spacing:-0.02em; margin:6px 0 4px 0; color:var(--text);
+}
+.login-hint{ color:var(--text-dim); font-size:12.5px; margin:0 0 20px 0; line-height:1.5; }
+.login-label{
+  display:block; font-family:var(--display); font-size:10px; font-weight:600;
+  color:var(--text-faint); text-transform:uppercase; letter-spacing:.06em;
+  margin:0 0 5px 0;
+}
+.login-box input{ margin-bottom:14px; }
+.login-btn{ width:100%; margin-top:4px; padding:11px; }
+.login-error{
+  color:var(--danger); font-size:12.5px; min-height:18px;
+  margin-bottom:4px; font-weight:500;
+}
+.logout-btn{
+  margin:10px 8px 0 8px; padding:8px 10px; background:transparent;
+  border:1px solid var(--border); color:var(--text-faint); border-radius:8px;
+  font-size:12px; cursor:pointer; font-family:var(--display); font-weight:600;
+}
+.logout-btn:hover{ border-color:var(--danger); color:var(--danger); }
 html,body{margin:0;padding:0;}
 body{
   background:var(--bg);
@@ -322,7 +361,21 @@ select:focus{outline:none; border-color:var(--accent);}
 </style>
 </head>
 <body>
-<div class="app">
+<div id="loginScreen" class="login-screen">
+  <div class="login-box">
+    <div class="login-eyebrow">Склад запчастей</div>
+    <h1 class="login-title">Вход в систему</h1>
+    <p class="login-hint">Введите логин и пароль, выданные администратором.</p>
+    <label class="login-label">Логин</label>
+    <input type="text" id="loginUser" autocomplete="username" placeholder="логин">
+    <label class="login-label">Пароль</label>
+    <input type="password" id="loginPass" autocomplete="current-password" placeholder="пароль">
+    <div class="login-error" id="loginError"></div>
+    <button class="btn login-btn" id="loginBtn">Войти</button>
+  </div>
+</div>
+
+<div class="app" id="appRoot" style="display:none;">
   <div class="sidebar">
     <div class="brand-header">
       <div class="eyebrow">Склад запчастей</div>
@@ -346,6 +399,7 @@ select:focus{outline:none; border-color:var(--accent);}
       <input type="text" id="addBrandInput" placeholder="Название бренда">
       <button class="btn small" id="addBrandSave">OK</button>
     </div>
+    <button class="logout-btn" id="logoutBtn" style="display:none;">Выйти</button>
   </div>
 
   <div class="main" id="main"></div>
@@ -356,6 +410,7 @@ select:focus{outline:none; border-color:var(--accent);}
 const storage = {
   async get(key){
     const res = await fetch('/api/kv/' + encodeURIComponent(key));
+    if(res.status === 401){ handleSessionExpired(); throw new Error('unauthorized'); }
     if(res.status === 404) throw new Error('not found');
     if(!res.ok) throw new Error('storage error: ' + res.status);
     return res.json();
@@ -383,11 +438,27 @@ const storage = {
   async getBatch(keys){
     if(!keys || keys.length === 0) return {};
     const res = await fetch('/api/kv-batch?keys=' + encodeURIComponent(keys.join(',')));
+    if(res.status === 401){ handleSessionExpired(); return {}; }
     if(!res.ok) return {};
     const data = await res.json();
     return data.values || {};
   }
 };
+
+// Called when the server reports the session is no longer valid (expired or the
+// server restarted). Sends the user back to the login screen rather than leaving
+// them looking at a page that silently fails to load or save anything.
+let sessionExpiredHandled = false;
+function handleSessionExpired(){
+  if(sessionExpiredHandled) return;
+  sessionExpiredHandled = true;
+  try{
+    document.getElementById("appRoot").style.display = "none";
+    document.getElementById("loginScreen").style.display = "flex";
+    const err = document.getElementById("loginError");
+    if(err) err.textContent = "Сессия истекла — войдите заново.";
+  }catch(e){}
+}
 
 const BRAND_LOGOS = {
   "Kia": "data:image/jpeg;base64,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",
@@ -1916,12 +1987,100 @@ function setupTheme(){
   });
 }
 
-(async function init(){
-  setupTheme();
-  document.getElementById("userNameInput").oninput = (e) => { currentUserName = e.target.value.trim(); };
+// ---- Authentication -------------------------------------------------------
+
+let authDisabled = false;
+
+function showLoginScreen(){
+  document.getElementById("loginScreen").style.display = "flex";
+  document.getElementById("appRoot").style.display = "none";
+  const userInput = document.getElementById("loginUser");
+  if(userInput) userInput.focus();
+}
+
+function showApp(){
+  document.getElementById("loginScreen").style.display = "none";
+  document.getElementById("appRoot").style.display = "flex";
+}
+
+async function checkAuth(){
+  try{
+    const res = await fetch('/api/me');
+    if(!res.ok) return null;
+    const data = await res.json();
+    authDisabled = !!data.authDisabled;
+    return data.authenticated ? data.login : null;
+  }catch(e){ return null; }
+}
+
+async function doLogin(){
+  const errEl = document.getElementById("loginError");
+  const login = document.getElementById("loginUser").value.trim();
+  const password = document.getElementById("loginPass").value;
+  if(!login || !password){ errEl.textContent = "Введите логин и пароль."; return; }
+
+  const btn = document.getElementById("loginBtn");
+  btn.disabled = true;
+  btn.textContent = "Вход...";
+  errEl.textContent = "";
+
+  try{
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ login, password })
+    });
+    const data = await res.json();
+    if(!data.ok){
+      errEl.textContent = data.error || "Не удалось войти.";
+      btn.disabled = false;
+      btn.textContent = "Войти";
+      return;
+    }
+    document.getElementById("loginPass").value = "";
+    await startApp(data.login);
+  }catch(e){
+    errEl.textContent = "Ошибка соединения с сервером.";
+    btn.disabled = false;
+    btn.textContent = "Войти";
+  }
+}
+
+// Boots the actual application once we know who the user is. The logged-in
+// login is used as the default "uploaded by" name, so uploads are attributed
+// without anyone having to type their name.
+async function startApp(login){
+  showApp();
+  if(login && login !== "guest"){
+    currentUserName = login;
+    const nameInput = document.getElementById("userNameInput");
+    if(nameInput && !nameInput.value) nameInput.value = login;
+  }
+  if(!authDisabled){
+    const lo = document.getElementById("logoutBtn");
+    if(lo) lo.style.display = "block";
+  }
   await checkStorageAvailability();
   await loadBrands();
   await renderAll();
+}
+
+(async function init(){
+  setupTheme();
+  document.getElementById("userNameInput").oninput = (e) => { currentUserName = e.target.value.trim(); };
+
+  document.getElementById("loginBtn").onclick = doLogin;
+  ["loginUser","loginPass"].forEach(id => {
+    document.getElementById(id).onkeydown = (e) => { if(e.key === "Enter") doLogin(); };
+  });
+  document.getElementById("logoutBtn").onclick = async () => {
+    try{ await fetch('/api/logout', { method: 'POST' }); }catch(e){}
+    location.reload();
+  };
+
+  const login = await checkAuth();
+  if(login) await startApp(login);
+  else showLoginScreen();
 })();
 
 async function checkStorageAvailability(){
