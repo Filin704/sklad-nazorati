@@ -373,6 +373,33 @@ select:focus{outline:none; border-color:var(--accent);}
   display:inline-block; font-family:var(--display); font-size:10.5px;
   font-weight:700; padding:4px 10px; border-radius:20px; white-space:nowrap;
 }
+
+/* ---- Warranty brand tabs ---- */
+.w-tabs{
+  display:flex; flex-wrap:wrap; gap:6px;
+  margin:0 0 14px 0; padding-bottom:12px;
+  border-bottom:1px solid var(--border);
+}
+.w-tab{
+  display:flex; align-items:center; gap:7px;
+  padding:7px 14px; border-radius:20px; cursor:pointer;
+  background:var(--panel-alt); border:1px solid var(--border);
+  color:var(--text-dim); font-size:12.5px; font-weight:600;
+  font-family:var(--display); white-space:nowrap;
+}
+.w-tab:hover{ color:var(--text); border-color:var(--accent-dim); }
+.w-tab.active{ background:var(--accent-soft); border-color:var(--accent-dim); color:var(--accent); }
+.w-tab-count{
+  font-family:var(--mono); font-size:10px; font-weight:600;
+  background:var(--panel); border:1px solid var(--border);
+  border-radius:20px; padding:1px 7px; color:var(--text-faint);
+}
+.w-tab.active .w-tab-count{ color:var(--accent); border-color:var(--accent-dim); }
+
+/* Vertical separators so the warranty columns don't visually run together. */
+.w-table th, .w-table td{ border-right:1px solid var(--border); }
+.w-table th:last-child, .w-table td:last-child{ border-right:none; }
+.w-table td{ padding-top:13px; padding-bottom:13px; }
 .w-status-green{ background:var(--success-dim); color:var(--success); border:1px solid var(--success-border); }
 .w-status-yellow{ background:var(--warn-soft); color:var(--warn); border:1px solid var(--banner-warn-border); }
 .w-status-red{ background:var(--danger-dim); color:var(--danger); border:1px solid var(--danger-border); }
@@ -893,6 +920,16 @@ async function renderWarranty(){
   const records = [...cachedWarranty].sort((a,b) => (b.date || "").localeCompare(a.date || ""));
   const warrantyStockMap = buildStockMap();
 
+  // Tabs are built only from brands that actually have claims, so empty
+  // sections never appear.
+  const countByBrand = {};
+  let noBrandCount = 0;
+  records.forEach(r => {
+    if(r.brand) countByBrand[r.brand] = (countByBrand[r.brand] || 0) + 1;
+    else noBrandCount++;
+  });
+  const brandsWithRecords = brands.filter(b => countByBrand[b] > 0);
+
   main.innerHTML = `
     <div class="main-header">
       <h2>🛡 Гарантия</h2>
@@ -949,8 +986,17 @@ async function renderWarranty(){
       <h3>Гарантийные заявки</h3>
       <p class="hint">Список сохранённых заявок. Удалите заявку, когда деталь получена и вопрос закрыт.</p>
       <input type="text" class="search-box" id="wSearch" placeholder="Поиск по VIN, артикулу, модели...">
+
+      <div class="w-tabs" id="wTabs">
+        <div class="w-tab active" data-wbrand="">Все <span class="w-tab-count">${records.length}</span></div>
+        ${brandsWithRecords.map(b => `
+          <div class="w-tab" data-wbrand="${esc(b)}">${esc(b)} <span class="w-tab-count">${countByBrand[b]}</span></div>
+        `).join("")}
+        ${noBrandCount > 0 ? `<div class="w-tab" data-wbrand="__none__">Без бренда <span class="w-tab-count">${noBrandCount}</span></div>` : ""}
+      </div>
+
       <div style="max-height:460px; overflow-y:auto;">
-      <table>
+      <table class="w-table">
         <thead><tr><th>Дата</th><th>VIN</th><th>Телефон</th><th>Бренд</th><th>Модель</th><th>Артикул</th><th>Наименование</th><th style="width:190px;">Статус</th><th style="width:110px;"></th></tr></thead>
         <tbody id="wBody">
           ${records.map(r => {
@@ -967,13 +1013,13 @@ async function renderWarranty(){
 
             const arrivedTxt = (statusHtml && arrived) ? `<span class="w-arrived">Товар поступил</span>` : "";
             return `
-            <tr data-id="${esc(r.id)}" data-search="${esc(((r.vin||"")+" "+(r.artikul||"")+" "+(r.model||"")+" "+(r.name||"")+" "+(r.brand||"")+" "+(r.phone||"")).toLowerCase())}">
+            <tr data-id="${esc(r.id)}" data-wbrand="${esc(r.brand || "__none__")}" data-search="${esc(((r.vin||"")+" "+(r.artikul||"")+" "+(r.model||"")+" "+(r.name||"")+" "+(r.brand||"")+" "+(r.phone||"")).toLowerCase())}">
               <td class="mono">${esc(r.date || "")}</td>
               <td class="mono">${esc(r.vin || "")}</td>
               <td class="mono">${esc(r.phone || "") || "<span style='color:var(--text-faint)'>—</span>"}</td>
-              <td>${esc(r.brand || "")}</td>
-              <td>${esc(r.model || "")}</td>
-              <td class="mono">${esc(r.artikul || "")}</td>
+              <td>${esc(r.brand || "") || "<span style='color:var(--text-faint)'>—</span>"}</td>
+              <td>${esc(r.model || "") || "<span style='color:var(--text-faint)'>—</span>"}</td>
+              <td class="mono">${esc(r.artikul || "") || "<span style='color:var(--text-faint)'>—</span>"}</td>
               <td>${esc(r.name || "") || "<span style='color:var(--text-faint)'>—</span>"}</td>
               <td>${statusHtml}${arrivedTxt}</td>
               <td><button class="btn danger-outline w-del-btn">Удалить</button></td>
@@ -1041,9 +1087,9 @@ async function renderWarranty(){
     const name = document.getElementById("wName").value.trim();
     const phone = document.getElementById("wPhone").value.trim();
 
-    if(!brand){ showToast("Выберите бренд.", "warning"); return; }
-    if(!artikul){ showToast("Введите артикул запчасти.", "warning"); return; }
+    // Only VIN and the part name are required — the rest can be filled in later.
     if(!vin){ showToast("Введите VIN номер.", "warning"); return; }
+    if(!name){ showToast("Введите наименование запчасти.", "warning"); return; }
 
     const record = {
       id: "w" + Date.now() + Math.random().toString(36).slice(2,7),
@@ -1055,18 +1101,41 @@ async function renderWarranty(){
     cachedWarranty.push(record);
     await saveWarranty(cachedWarranty);
 
-    showToast("Заявка сохранена. Деталь появится в нехватке бренда «" + brand + "».", "success");
+    showToast(brand
+      ? "Заявка сохранена. Деталь появится в нехватке бренда «" + brand + "»."
+      : "Заявка сохранена. Укажите бренд позже, чтобы она попала в список нехватки.", "success");
     renderFromCache();
   };
 
   const wSearch = document.getElementById("wSearch");
   const wRows = Array.from(document.querySelectorAll("#wBody tr"));
-  if(wSearch) wSearch.oninput = debounce((e) => {
-    const q = e.target.value.toLowerCase().trim();
+  let activeWBrand = "";   // "" = all brands
+  let activeWQuery = "";
+
+  // Both filters are applied together, so switching tabs keeps the search text
+  // and typing keeps the selected brand.
+  function applyWarrantyFilters(){
     wRows.forEach(tr => {
-      if(tr.dataset.search !== undefined) tr.style.display = tr.dataset.search.includes(q) ? "" : "none";
+      if(tr.dataset.search === undefined) return;
+      const brandOk = !activeWBrand || tr.dataset.wbrand === activeWBrand;
+      const queryOk = !activeWQuery || tr.dataset.search.includes(activeWQuery);
+      tr.style.display = (brandOk && queryOk) ? "" : "none";
     });
+  }
+
+  if(wSearch) wSearch.oninput = debounce((e) => {
+    activeWQuery = e.target.value.toLowerCase().trim();
+    applyWarrantyFilters();
   }, 150);
+
+  document.querySelectorAll("#wTabs .w-tab").forEach(tab => {
+    tab.onclick = () => {
+      document.querySelectorAll("#wTabs .w-tab").forEach(t => t.classList.remove("active"));
+      tab.classList.add("active");
+      activeWBrand = tab.dataset.wbrand || "";
+      applyWarrantyFilters();
+    };
+  });
 
   document.querySelectorAll("#wBody .w-del-btn").forEach(btn => {
     btn.onclick = async () => {
