@@ -108,15 +108,24 @@ function hashPassword(pw) {
   return crypto.createHash('sha256').update(String(pw)).digest('hex');
 }
 
+// Users come from APP_USERS, formatted as:
+//   login:password           -> full access
+//   login:password:warranty  -> may only read/write warranty data
 function parseUsers() {
   const raw = process.env.APP_USERS || '';
   const users = {};
   raw.split(',').forEach(pair => {
-    const idx = pair.indexOf(':');
-    if (idx < 1) return;
-    const login = pair.slice(0, idx).trim();
-    const pw = pair.slice(idx + 1).trim();
-    if (login && pw) users[login.toLowerCase()] = hashPassword(pw);
+    const parts = pair.split(':');
+    if (parts.length < 2) return;
+    const login = parts[0].trim();
+    const pw = parts[1].trim();
+    const role = (parts[2] || 'full').trim().toLowerCase();
+    if (login && pw) {
+      users[login.toLowerCase()] = {
+        hash: hashPassword(pw),
+        role: role === 'warranty' ? 'warranty' : 'full'
+      };
+    }
   });
   return users;
 }
@@ -137,9 +146,9 @@ function safeEqual(a, b) {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
-function createSession(login) {
+function createSession(login, role) {
   const token = crypto.randomBytes(32).toString('hex');
-  sessions.set(token, { login, expires: Date.now() + SESSION_TTL_MS });
+  sessions.set(token, { login, role, expires: Date.now() + SESSION_TTL_MS });
   return token;
 }
 
@@ -160,23 +169,23 @@ setInterval(() => {
 }, 60 * 60 * 1000);
 
 app.post('/api/login', (req, res) => {
-  if (!AUTH_ENABLED) return res.json({ ok: true, login: 'guest', authDisabled: true });
+  if (!AUTH_ENABLED) return res.json({ ok: true, login: 'guest', role: 'full', authDisabled: true });
 
   const login = String(req.body.login || '').trim().toLowerCase();
   const password = String(req.body.password || '');
-  const expected = USERS[login];
+  const user = USERS[login];
 
   // Always run a comparison so a wrong login and a wrong password take the same
   // amount of time, which avoids leaking which logins exist.
   const provided = hashPassword(password);
-  const ok = expected ? safeEqual(expected, provided) : false;
+  const ok = user ? safeEqual(user.hash, provided) : false;
 
   if (!ok) return res.status(401).json({ ok: false, error: 'Неверный логин или пароль' });
 
-  const token = createSession(login);
+  const token = createSession(login, user.role);
   res.setHeader('Set-Cookie',
     `sklad_session=${token}; HttpOnly; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}; SameSite=Lax`);
-  res.json({ ok: true, login });
+  res.json({ ok: true, login, role: user.role });
 });
 
 app.post('/api/logout', (req, res) => {
@@ -187,23 +196,62 @@ app.post('/api/logout', (req, res) => {
 });
 
 app.get('/api/me', (req, res) => {
-  if (!AUTH_ENABLED) return res.json({ authenticated: true, login: 'guest', authDisabled: true });
+  if (!AUTH_ENABLED) return res.json({ authenticated: true, login: 'guest', role: 'full', authDisabled: true });
   const s = getSession(req);
   if (!s) return res.status(401).json({ authenticated: false });
-  res.json({ authenticated: true, login: s.login });
+  res.json({ authenticated: true, login: s.login, role: s.role || 'full' });
 });
 
 // Guards every data endpoint below. Registered before the API routes so an
 // unauthenticated request can never reach the storage layer.
 function requireAuth(req, res, next) {
   if (!AUTH_ENABLED) return next();
-  if (getSession(req)) return next();
-  res.status(401).json({ error: 'unauthorized' });
+  const s = getSession(req);
+  if (!s) return res.status(401).json({ error: 'unauthorized' });
+  req.session = s;
+  next();
+}
+
+// Keys a warranty-only user is allowed to touch. Everything else (stock,
+// thresholds, history, ignore list) is off limits for them. This is enforced
+// server-side, so hiding the UI is a convenience — not the actual protection.
+const WARRANTY_ALLOWED_KEYS = new Set(['warranty_records', 'car_models', 'brands_list', '__connectivity_check__']);
+
+function keyAllowedForRole(key, role) {
+  if (role !== 'warranty') return true;
+  return WARRANTY_ALLOWED_KEYS.has(key);
+}
+
+function restrictByRole(req, res, next) {
+  const role = (req.session && req.session.role) || 'full';
+  if (role !== 'warranty') return next();
+
+  // Single-key routes: /api/kv/:key
+  if (req.params && req.params.key) {
+    if (!keyAllowedForRole(req.params.key, role)) {
+      return res.status(403).json({ error: 'forbidden' });
+    }
+    return next();
+  }
+
+  // Batch route: filter the requested keys down to the permitted ones.
+  if (req.query && typeof req.query.keys === 'string') {
+    const allowed = req.query.keys.split(',')
+      .map(k => k.trim())
+      .filter(k => k && keyAllowedForRole(k, role));
+    req.query.keys = allowed.join(',');
+    return next();
+  }
+
+  next();
 }
 
 app.use('/api/kv', requireAuth);
 app.use('/api/kv-batch', requireAuth);
 app.use('/api/notify', requireAuth);
+
+app.use('/api/kv/:key', restrictByRole);
+app.use('/api/kv-batch', restrictByRole);
 
 // --- API ----------------------------------------------------------------
 
