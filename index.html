@@ -250,6 +250,7 @@ select:focus{outline:none; border-color:var(--accent);}
 .watch-check{ width:14px; height:14px; margin:0; cursor:pointer; }
 .watch-check-1{ accent-color:var(--success); }
 .watch-check-2{ accent-color:var(--warn); }
+.watch-check-3{ accent-color:var(--text-faint); }
 .watch-card.watch-tint-1{ background:var(--success-dim); border-color:var(--success-border); opacity:.6; }
 .watch-card.watch-tint-2{ background:var(--warn-soft); border-color:var(--banner-warn-border); opacity:.6; }
 .watch-card.watch-tint-1.watch-tint-2{ background:linear-gradient(135deg, var(--success-dim), var(--warn-soft)); }
@@ -1560,6 +1561,7 @@ async function renderBrandStatus(brand, stock){
                 <div class="watch-check-row">
                   <input type="checkbox" class="watch-check watch-check-1" data-idx="${sIdx}" data-artikul="${esc(s.artikul)}" title="Заказано — уберёт из общих уведомлений" ${s.flag1?'checked':''}>
                   <input type="checkbox" class="watch-check watch-check-2" data-idx="${sIdx}" data-artikul="${esc(s.artikul)}" title="Отметка (только визуальная)" ${s.flag2?'checked':''}>
+                  <input type="checkbox" class="watch-check watch-check-3" data-idx="${sIdx}" data-artikul="${esc(s.artikul)}" title="Не нужен — убрать из отслеживания нехватки">
                 </div>
               </div>
               <div class="watch-body">
@@ -1656,6 +1658,23 @@ async function renderBrandStatus(brand, stock){
         th[art].flag2 = cb.checked;
         saveThresholds(brand, th); // purely visual flag — no re-render needed at all
       }
+    };
+  });
+  document.querySelectorAll(".watch-check-3").forEach(cb => {
+    cb.onchange = async () => {
+      const art = cb.dataset.artikul;
+      const th = cachedThresholdsByBrand[brand];
+      if(th && th[art]){
+        th[art].notNeeded = cb.checked;
+        const hits = cachedMap[normKey(art)] || [];
+        hits.forEach(h => { if(h.brand === brand) h.notNeeded = cb.checked; });
+        await saveThresholds(brand, th);
+        showToast(cb.checked
+          ? "Помечено как «не нужен» для бренда «" + brand + "»."
+          : "Возвращено в отслеживание.", "success");
+      }
+      // notNeeded changes which items appear in the shortage list, so re-render.
+      renderFromCache();
     };
   });
 }
