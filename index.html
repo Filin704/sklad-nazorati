@@ -627,27 +627,39 @@ function formatRate(perMonth){
   return perMonth.toFixed(1).replace(".0","") + " шт/мес";
 }
 
+// Counts how many of a brand's tracked artikuls are at or below their minimum.
+// Iterates the brand's REGISTERED list rather than the uploaded rows: when an item
+// runs out completely, 1C often omits it from the export entirely, and such an item
+// must still be reported as missing (quantity 0), not silently skipped.
+function countBrandShortages(brand, stockMap){
+  const th = cachedThresholdsByBrand[brand] || {};
+  let count = 0;
+  Object.keys(th).forEach(art => {
+    const t = th[art];
+    if(t.notNeeded || t.flag1) return;
+    const si = stockMap[normKey(art)];
+    const qty = si ? si.qty : 0;
+    if(qty <= t.minQty) count++;
+  });
+  return count;
+}
+
+function buildStockMap(){
+  const stockMap = {};
+  if(cachedStock) cachedStock.items.forEach(it => { stockMap[normKey(it.artikul)] = it; });
+  return stockMap;
+}
+
 async function renderSidebar(){
   document.getElementById("homeNavItem").className = "brand-item" + (activePage === "home" ? " active" : "");
   document.getElementById("homeNavItem").onclick = () => { activePage = "home"; renderFromCache(); };
 
   const list = document.getElementById("brandList");
-  const stock = cachedStock;
-  const map = cachedMap;
-  const stockByBrand = {};
-  if(stock){
-    stock.items.forEach(it => {
-      const hits = map[normKey(it.artikul)] || [];
-      hits.forEach(hit => {
-        (stockByBrand[hit.brand] = stockByBrand[hit.brand] || []).push({...it, minQty:hit.minQty, notNeeded:hit.notNeeded, flag1:hit.flag1});
-      });
-    });
-  }
+  const stockMap = buildStockMap();
 
   list.innerHTML = "";
   brands.forEach(b => {
-    const items = stockByBrand[b] || [];
-    const shortages = items.filter(it => !it.notNeeded && !it.flag1 && it.qty <= it.minQty).length;
+    const shortages = countBrandShortages(b, stockMap);
     const li = document.createElement("li");
     const logo = BRAND_LOGOS[b];
     li.className = "brand-item" + (b === activePage ? " active" : "") + (logo ? " has-logo" : "");
@@ -1194,14 +1206,15 @@ async function renderHomeResults(stock){
   });
 
   let totalShortages = 0;
+  const stockMapForCards = buildStockMap();
   const cardsHtml = brands.map(b => {
-    const items = brandGroups[b];
-    const shortages = items.filter(it => !it.notNeeded && !it.flag1 && it.qty <= it.minQty).length;
+    const registeredCount = Object.keys(cachedThresholdsByBrand[b] || {}).length;
+    const shortages = countBrandShortages(b, stockMapForCards);
     totalShortages += shortages;
     return `
       <div class="brand-card" data-brand="${esc(b)}">
         <div class="name">${esc(b)}</div>
-        <div class="stat">Позиций: ${items.length}</div>
+        <div class="stat">Позиций: ${registeredCount}</div>
         <div class="stat ${shortages>0?'low':''}">${shortages>0 ? shortages + " ниже минимума" : "Всё в норме"}</div>
       </div>`;
   }).join("");
