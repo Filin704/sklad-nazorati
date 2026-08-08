@@ -756,7 +756,7 @@ async function searchArtikul(query){
     const th = allThresholds[i];
     Object.keys(th).forEach(art => {
       if(normKey(art).includes(nq)){
-        matches.push({ brand: b, artikul: art, name: th[art].name, minQty: th[art].minQty });
+        matches.push({ brand: b, artikul: art, name: th[art].name, minQty: th[art].minQty, orderQty: th[art].orderQty || 0 });
       }
     });
   });
@@ -787,6 +787,10 @@ async function searchArtikul(query){
           <label>Минимум</label>
           <input type="number" id="newArtMin" min="0" value="1">
         </div>
+        <div style="max-width:120px;">
+          <label>Заказать кол-во</label>
+          <input type="number" id="newArtOrder" min="0" value="0">
+        </div>
         <div>
           <label>&nbsp;</label>
           <label class="brand-chip"><input type="checkbox" id="newArtIgnore"> Не нужен (не отслеживать)</label>
@@ -798,21 +802,27 @@ async function searchArtikul(query){
       const artikul = document.getElementById("newArtArtikul").value.trim();
       const name = document.getElementById("newArtName").value.trim();
       const minQty = parseFloat(document.getElementById("newArtMin").value) || 0;
+      const orderQty = parseFloat(document.getElementById("newArtOrder").value) || 0;
       const ignore = document.getElementById("newArtIgnore").checked;
       if(!artikul){ showToast("Введите артикул.", "warning"); return; }
-      if(ignore){
+
+      const chosenBrands = Array.from(document.querySelectorAll(".new-art-brand:checked")).map(c => c.value);
+
+      if(ignore && chosenBrands.length === 0){
+        // No brand chosen — goes to the global brandless ignore list.
         const list = await getIgnoredList();
         list[normKey(artikul)] = { artikul, name };
         await saveIgnoredList(list);
         showToast("Артикул помечен как ненужный.", "success");
       } else {
-        const chosenBrands = Array.from(document.querySelectorAll(".new-art-brand:checked")).map(c => c.value);
         if(chosenBrands.length === 0){ showToast("Выберите хотя бы один бренд или отметьте «Не нужен».", "warning"); return; }
-        for(const brand of chosenBrands){
+        // Brand(s) chosen: keep the link even when marked "не нужен", so the item
+        // still belongs to the brand's stock list but isn't monitored for shortage.
+        await Promise.all(chosenBrands.map(async (brand) => {
           const th = await getThresholds(brand);
-          th[artikul] = { name, minQty };
+          th[artikul] = { name, minQty, orderQty, notNeeded: ignore };
           await saveThresholds(brand, th);
-        }
+        }));
         showToast("Сохранено.", "success");
       }
       searchArtikul(query);
@@ -837,7 +847,7 @@ async function searchArtikul(query){
     html += `
       <div style="max-height:320px; overflow-y:auto; margin-top:12px;">
       <table>
-        <thead><tr><th>Бренд</th><th>Артикул</th><th>Наименование</th><th style="width:110px;">Минимум</th><th>Тек. кол-во</th><th style="width:170px;"></th></tr></thead>
+        <thead><tr><th>Бренд</th><th>Артикул</th><th>Наименование</th><th style="width:100px;">Минимум</th><th style="width:110px;">Заказать</th><th>Тек. кол-во</th><th style="width:170px;"></th></tr></thead>
         <tbody>
           ${matches.map((m,idx) => {
             const stockM = stock ? stock.items.find(it => normKey(it.artikul) === normKey(m.artikul)) : null;
@@ -847,6 +857,7 @@ async function searchArtikul(query){
               <td class="mono">${esc(m.artikul)}</td>
               <td><input type="text" class="edit-name" value="${esc(m.name || '')}"></td>
               <td><input type="number" class="edit-min" min="0" value="${m.minQty}"></td>
+              <td><input type="number" class="edit-order" min="0" value="${m.orderQty || 0}"></td>
               <td class="mono" style="color:var(--text);">${stockM ? stockM.qty : "—"}</td>
               <td>
                 <button class="btn small edit-save-btn">Сохранить</button>
@@ -880,8 +891,16 @@ async function searchArtikul(query){
     tr.querySelector(".edit-save-btn").onclick = async () => {
       const name = tr.querySelector(".edit-name").value.trim();
       const minQty = parseFloat(tr.querySelector(".edit-min").value) || 0;
+      const orderQty = parseFloat(tr.querySelector(".edit-order").value) || 0;
       const th = await getThresholds(m.brand);
-      th[m.artikul] = { name, minQty };
+      // Carry over flags this form doesn't expose, so editing here doesn't reset them.
+      const prev = th[m.artikul] || {};
+      th[m.artikul] = {
+        name, minQty, orderQty,
+        notNeeded: !!prev.notNeeded,
+        flag1: !!prev.flag1,
+        flag2: !!prev.flag2
+      };
       await saveThresholds(m.brand, th);
       showToast("Изменения сохранены.", "success");
       renderAll();
