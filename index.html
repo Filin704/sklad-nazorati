@@ -310,6 +310,30 @@ select:focus{outline:none; border-color:var(--accent);}
 .watch-rate b{ color:var(--accent); }
 .watch-rate.muted{ color:var(--text-faint); font-style:italic; }
 .watch-rate-meta{ display:block; color:var(--text-faint); font-size:9.5px; margin-top:2px; }
+
+/* ---- Warranty ---- */
+.warranty-form{
+  display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;
+  background:var(--panel-alt); border:1px solid var(--border);
+  border-radius:10px; padding:14px;
+}
+.warranty-form > div{ flex:1; min-width:130px; }
+.warranty-form label{
+  display:block; font-family:var(--display); font-weight:600; font-size:10px;
+  color:var(--text-faint); text-transform:uppercase; letter-spacing:.05em; margin-bottom:5px;
+}
+.model-row{ display:flex; gap:6px; align-items:center; }
+.model-row select{ flex:1; }
+.model-row .btn{ padding:8px 12px; font-size:14px; line-height:1; }
+.warranty-card{ border-left-color:var(--accent); }
+.warranty-meta{
+  font-size:10.5px; color:var(--text-dim); margin-top:6px; line-height:1.4;
+}
+.warranty-meta b{ font-family:var(--mono); color:var(--text); font-size:10px; }
+.warranty-date{
+  display:block; font-family:var(--mono); font-size:9.5px;
+  color:var(--text-faint); margin-top:2px;
+}
 .watch-nums .min{ color:var(--text-faint); font-weight:500; }
 
 .empty-state{text-align:center; padding:36px 20px; color:var(--text-faint); font-size:13px;}
@@ -391,6 +415,7 @@ select:focus{outline:none; border-color:var(--accent);}
     </div>
     <ul class="nav-section">
       <li class="brand-item" id="homeNavItem"><span>🏠 Главная</span></li>
+      <li class="brand-item" id="warrantyNavItem"><span>🛡 Гарантия</span></li>
     </ul>
     <div class="nav-label">Бренды</div>
     <ul class="brand-list" id="brandList"></ul>
@@ -474,6 +499,41 @@ const BRANDS_KEY = "brands_list";
 const GLOBAL_STOCK_KEY = "stock__GLOBAL_MIXED";
 const IGNORED_KEY = "ignored_artikuls";
 const HISTORY_KEY = "stock_history";
+const WARRANTY_KEY = "warranty_records";
+const MODELS_KEY = "car_models";
+
+// Starting model lists. Users can add more via the "+" button on the warranty
+// page, and anything they add is saved and reused for that brand from then on.
+const DEFAULT_MODELS = {
+  "Chery":     ["Tiggo 2", "Tiggo 7", "Tiggo 8", "Tiggo 8 Pro Max", "Tiggo 9", "Arrizo 6"],
+  "Kia":       ["Sportage", "Sonet", "Seltos", "K5", "K8", "Cerato", "Carnival", "Sorento"],
+  "Haval":     ["Jolion", "H6", "Dargo", "M6", "F7"],
+  "Chevrolet": ["Cobalt", "Onix", "Tracker", "Captiva", "Equinox", "Spark", "Damas", "Nexia"],
+  "Jetour":    ["X70", "X90", "T2", "Dashing"],
+  "Li":        []
+};
+
+async function getWarranty(){
+  try{ const res = await storage.get(WARRANTY_KEY); return res ? JSON.parse(res.value) : []; }
+  catch(e){ return []; }
+}
+async function saveWarranty(data){ await storage.set(WARRANTY_KEY, JSON.stringify(data)); }
+
+async function getCarModels(){
+  try{ const res = await storage.get(MODELS_KEY); return res ? JSON.parse(res.value) : {}; }
+  catch(e){ return {}; }
+}
+async function saveCarModels(data){ await storage.set(MODELS_KEY, JSON.stringify(data)); }
+
+// Merges saved models with the built-in defaults so a brand always has a
+// starting list, while anything the user added is preserved.
+function modelsForBrand(brand){
+  const saved = (cachedModels && cachedModels[brand]) || [];
+  const defaults = DEFAULT_MODELS[brand] || [];
+  const merged = [...defaults];
+  saved.forEach(m => { if(!merged.includes(m)) merged.push(m); });
+  return merged;
+}
 const HISTORY_MAX_DAYS = 120; // keep ~4 months of daily snapshots
 
 // History is stored compactly as { "YYYY-MM-DD": { ARTIKUL: qty, ... }, ... } so that
@@ -585,13 +645,15 @@ let cachedMap = null;
 let cachedThresholdsByBrand = {};
 let cachedIgnoredList = {};
 let cachedHistory = {};
+let cachedWarranty = [];
+let cachedModels = {};
 
 // Loads everything the app needs to render (stock snapshot, every brand's threshold
 // registry, the ignore list, and the history) in a SINGLE HTTP round-trip via the
 // batch endpoint, instead of one separate request per brand plus separate requests.
 async function loadCoreData(){
   const threshKeys = brands.map(b => threshKey(b));
-  const allKeys = [...threshKeys, GLOBAL_STOCK_KEY, IGNORED_KEY, HISTORY_KEY];
+  const allKeys = [...threshKeys, GLOBAL_STOCK_KEY, IGNORED_KEY, HISTORY_KEY, WARRANTY_KEY, MODELS_KEY];
 
   let values = {};
   try{
@@ -613,6 +675,12 @@ async function loadCoreData(){
 
   try{ cachedHistory = values[HISTORY_KEY] ? JSON.parse(values[HISTORY_KEY]) : {}; }
   catch(e){ cachedHistory = {}; }
+
+  try{ cachedWarranty = values[WARRANTY_KEY] ? JSON.parse(values[WARRANTY_KEY]) : []; }
+  catch(e){ cachedWarranty = []; }
+
+  try{ cachedModels = values[MODELS_KEY] ? JSON.parse(values[MODELS_KEY]) : {}; }
+  catch(e){ cachedModels = {}; }
 
   cachedMap = buildArtikulMapFromThresholds(cachedThresholdsByBrand);
 }
@@ -724,6 +792,8 @@ function buildStockMap(){
 async function renderSidebar(){
   document.getElementById("homeNavItem").className = "brand-item" + (activePage === "home" ? " active" : "");
   document.getElementById("homeNavItem").onclick = () => { activePage = "home"; renderFromCache(); };
+  document.getElementById("warrantyNavItem").className = "brand-item" + (activePage === "warranty" ? " active" : "");
+  document.getElementById("warrantyNavItem").onclick = () => { activePage = "warranty"; renderFromCache(); };
 
   const list = document.getElementById("brandList");
   const stockMap = buildStockMap();
@@ -762,6 +832,179 @@ document.getElementById("addBrandSave").onclick = async () => {
   showToast("Бренд «" + name + "» добавлен.", "success");
   renderAll();
 };
+
+/* ---------------- WARRANTY PAGE ---------------- */
+
+async function renderWarranty(){
+  const main = document.getElementById("main");
+
+  const brandOptions = brands.map(b => `<option value="${esc(b)}">${esc(b)}</option>`).join("");
+  const records = [...cachedWarranty].sort((a,b) => (b.date || "").localeCompare(a.date || ""));
+
+  main.innerHTML = `
+    <div class="main-header">
+      <h2>🛡 Гарантия</h2>
+      <div class="updated-at">Всего заявок: ${records.length}</div>
+    </div>
+
+    <div class="panel">
+      <h3>Новая гарантийная заявка</h3>
+      <p class="hint">Укажите машину и артикул детали. После сохранения деталь появится в списке нехватки выбранного бренда как гарантийная потребность — даже если на складе она формально в норме.</p>
+
+      <div class="warranty-form">
+        <div>
+          <label>Дата</label>
+          <input type="date" id="wDate" value="${todayKey()}">
+        </div>
+        <div style="flex:1.4;">
+          <label>VIN номер</label>
+          <input type="text" id="wVin" placeholder="напр. XW8ZZZ61ZJG000000" maxlength="20">
+        </div>
+        <div>
+          <label>Бренд</label>
+          <select id="wBrand"><option value="">— выберите —</option>${brandOptions}</select>
+        </div>
+        <div>
+          <label>Модель</label>
+          <div class="model-row">
+            <select id="wModel"><option value="">— сначала бренд —</option></select>
+            <button class="btn secondary small" id="wAddModelBtn" title="Добавить новую модель">+</button>
+          </div>
+        </div>
+        <div style="flex:1.2;">
+          <label>Артикул запчасти</label>
+          <input type="text" id="wArtikul" placeholder="артикул">
+        </div>
+        <div style="flex:1.2;">
+          <label>Наименование (не обязательно)</label>
+          <input type="text" id="wName" placeholder="наименование">
+        </div>
+        <button class="btn" id="wSaveBtn">Сохранить заявку</button>
+      </div>
+
+      <div class="inline-form" id="wNewModelForm" style="display:none;">
+        <input type="text" id="wNewModelInput" placeholder="Название модели, напр. Arrizo 6">
+        <button class="btn small" id="wNewModelSave">Добавить</button>
+        <button class="btn secondary small" id="wNewModelCancel">Отмена</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Гарантийные заявки</h3>
+      <p class="hint">Список сохранённых заявок. Удалите заявку, когда деталь получена и вопрос закрыт.</p>
+      <input type="text" class="search-box" id="wSearch" placeholder="Поиск по VIN, артикулу, модели...">
+      <div style="max-height:460px; overflow-y:auto;">
+      <table>
+        <thead><tr><th>Дата</th><th>VIN</th><th>Бренд</th><th>Модель</th><th>Артикул</th><th>Наименование</th><th style="width:110px;"></th></tr></thead>
+        <tbody id="wBody">
+          ${records.map(r => `
+            <tr data-id="${esc(r.id)}" data-search="${esc(((r.vin||"")+" "+(r.artikul||"")+" "+(r.model||"")+" "+(r.name||"")+" "+(r.brand||"")).toLowerCase())}">
+              <td class="mono">${esc(r.date || "")}</td>
+              <td class="mono">${esc(r.vin || "")}</td>
+              <td>${esc(r.brand || "")}</td>
+              <td>${esc(r.model || "")}</td>
+              <td class="mono">${esc(r.artikul || "")}</td>
+              <td>${esc(r.name || "") || "<span style='color:var(--text-faint)'>—</span>"}</td>
+              <td><button class="btn danger-outline w-del-btn">Удалить</button></td>
+            </tr>
+          `).join("")}
+          ${records.length === 0 ? `<tr><td colspan="7" class="empty-state">Заявок пока нет.</td></tr>` : ""}
+        </tbody>
+      </table>
+      </div>
+    </div>
+  `;
+
+  const brandSel = document.getElementById("wBrand");
+  const modelSel = document.getElementById("wModel");
+
+  function refreshModels(){
+    const b = brandSel.value;
+    if(!b){
+      modelSel.innerHTML = `<option value="">— сначала бренд —</option>`;
+      return;
+    }
+    const models = modelsForBrand(b);
+    modelSel.innerHTML = `<option value="">— не указана —</option>` +
+      models.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join("");
+  }
+
+  brandSel.onchange = refreshModels;
+
+  document.getElementById("wAddModelBtn").onclick = () => {
+    if(!brandSel.value){ showToast("Сначала выберите бренд.", "warning"); return; }
+    document.getElementById("wNewModelForm").style.display = "flex";
+    document.getElementById("wNewModelInput").focus();
+  };
+  document.getElementById("wNewModelCancel").onclick = () => {
+    document.getElementById("wNewModelForm").style.display = "none";
+    document.getElementById("wNewModelInput").value = "";
+  };
+  document.getElementById("wNewModelInput").onkeydown = (e) => {
+    if(e.key === "Enter") document.getElementById("wNewModelSave").click();
+  };
+  document.getElementById("wNewModelSave").onclick = async () => {
+    const b = brandSel.value;
+    const name = document.getElementById("wNewModelInput").value.trim();
+    if(!b){ showToast("Сначала выберите бренд.", "warning"); return; }
+    if(!name){ showToast("Введите название модели.", "warning"); return; }
+    if(modelsForBrand(b).includes(name)){ showToast("Такая модель уже есть.", "warning"); return; }
+
+    if(!cachedModels[b]) cachedModels[b] = [];
+    cachedModels[b].push(name);
+    await saveCarModels(cachedModels);
+
+    refreshModels();
+    modelSel.value = name;
+    document.getElementById("wNewModelForm").style.display = "none";
+    document.getElementById("wNewModelInput").value = "";
+    showToast("Модель «" + name + "» добавлена к бренду «" + b + "».", "success");
+  };
+
+  document.getElementById("wSaveBtn").onclick = async () => {
+    const date = document.getElementById("wDate").value;
+    const vin = document.getElementById("wVin").value.trim().toUpperCase();
+    const brand = brandSel.value;
+    const model = modelSel.value;
+    const artikul = document.getElementById("wArtikul").value.trim();
+    const name = document.getElementById("wName").value.trim();
+
+    if(!brand){ showToast("Выберите бренд.", "warning"); return; }
+    if(!artikul){ showToast("Введите артикул запчасти.", "warning"); return; }
+    if(!vin){ showToast("Введите VIN номер.", "warning"); return; }
+
+    const record = {
+      id: "w" + Date.now() + Math.random().toString(36).slice(2,7),
+      date: date || todayKey(),
+      vin, brand, model, artikul, name,
+      createdBy: currentUserName || ""
+    };
+    cachedWarranty.push(record);
+    await saveWarranty(cachedWarranty);
+
+    showToast("Заявка сохранена. Деталь появится в нехватке бренда «" + brand + "».", "success");
+    renderFromCache();
+  };
+
+  const wSearch = document.getElementById("wSearch");
+  const wRows = Array.from(document.querySelectorAll("#wBody tr"));
+  if(wSearch) wSearch.oninput = debounce((e) => {
+    const q = e.target.value.toLowerCase().trim();
+    wRows.forEach(tr => {
+      if(tr.dataset.search !== undefined) tr.style.display = tr.dataset.search.includes(q) ? "" : "none";
+    });
+  }, 150);
+
+  document.querySelectorAll("#wBody .w-del-btn").forEach(btn => {
+    btn.onclick = async () => {
+      const id = btn.closest("tr").dataset.id;
+      cachedWarranty = cachedWarranty.filter(r => r.id !== id);
+      await saveWarranty(cachedWarranty);
+      showToast("Заявка удалена.", "success");
+      renderFromCache();
+    };
+  });
+}
 
 async function renderHome(){
   const main = document.getElementById("main");
@@ -1642,6 +1885,41 @@ async function renderBrandStatus(brand, stock){
     </div>
   `;
 
+  // Warranty claims for this brand are a real demand for the part regardless of
+  // what the shelf count says, so they're surfaced right alongside the shortages.
+  const brandWarranty = cachedWarranty.filter(r => r.brand === brand);
+  let warrantyPanel = "";
+  if(brandWarranty.length > 0){
+    const sortedW = [...brandWarranty].sort((a,b) => (b.date||"").localeCompare(a.date||""));
+    warrantyPanel = `
+      <div class="panel">
+        <h3>🛡 Гарантийные потребности <span style="color:var(--text-faint); font-weight:500; font-size:12px;">${brandWarranty.length}</span></h3>
+        <p class="hint">Детали, запрошенные по гарантийным заявкам для бренда «${esc(brand)}». Их нужно обеспечить независимо от текущего остатка.</p>
+        <div class="watch-grid">
+          ${sortedW.map(r => {
+            const si = stockMap[normKey(r.artikul)];
+            const qty = si ? si.qty : 0;
+            return `
+            <div class="watch-card warranty-card">
+              <div class="watch-num-block">
+                <div class="watch-num ${qty <= 0 ? 'crit' : 'warn'}">${qty}</div>
+                <div class="watch-num-label">ЕСТЬ НА СКЛАДЕ</div>
+              </div>
+              <div class="watch-body">
+                <div class="watch-name">${esc(r.name) || esc(r.artikul)}</div>
+                <div class="watch-sku">${esc(r.artikul)}</div>
+                <div class="warranty-meta">
+                  🚗 ${esc(r.model) || "модель не указана"} · VIN <b>${esc(r.vin)}</b>
+                  <span class="warranty-date">${esc(r.date)}</span>
+                </div>
+              </div>
+            </div>`;
+          }).join("")}
+        </div>
+      </div>
+    `;
+  }
+
   let shortageTable = "";
   if(shortages.length > 0){
     shortageTable = `
@@ -1687,7 +1965,7 @@ async function renderBrandStatus(brand, stock){
   const hasAnySum = items.some(it => it.sum !== null && it.sum !== undefined);
   const totalSum = items.reduce((s, it) => s + (Number(it.sum) || 0), 0);
 
-  el.innerHTML = banner + exportPanel + shortageTable + `
+  el.innerHTML = banner + exportPanel + warrantyPanel + shortageTable + `
     <div class="panel">
       <h3>Полный список отслеживаемых позиций</h3>
       <p class="hint">Всего под контролем: ${items.length}</p>
@@ -1948,6 +2226,7 @@ function debounce(fn, ms){
 function renderFromCache(){
   renderSidebar();
   if(activePage === "home") renderHome();
+  else if(activePage === "warranty") renderWarranty();
   else renderBrandPage(activePage);
 }
 
