@@ -344,6 +344,11 @@ select:focus{outline:none; border-color:var(--accent);}
 .watch-check-3{ accent-color:var(--danger); }
 .watch-card.watch-tint-1{ background:var(--success-dim); border-color:var(--success-border); border-left-color:var(--success); }
 .watch-card.watch-tint-2{ background:var(--warn-soft); border-color:var(--banner-warn-border); border-left-color:var(--warn); }
+/* Ordered abroad: the claim stays visible but visually recedes. The checkboxes
+   keep full opacity so the state can still be undone. */
+.watch-card.watch-dimmed{ opacity:.42; border-left-color:var(--danger); }
+.watch-card.watch-dimmed:hover{ opacity:.75; }
+.watch-card.watch-dimmed .watch-check-row{ opacity:1; }
 .watch-card.watch-tint-1.watch-tint-2{ background:linear-gradient(135deg, var(--success-dim), var(--warn-soft)); }
 .watch-body{ flex:1; min-width:0; }
 .watch-name{ font-size:13.5px; font-weight:600; color:var(--text); line-height:1.3; margin-bottom:2px; }
@@ -1080,6 +1085,16 @@ function countBrandShortages(brand, stockMap){
     const qty = si ? si.qty : 0;
     if(qty <= t.minQty) count++;
   });
+
+  // Warranty claims are a real outstanding need too. Ones marked with the red
+  // flag (ordered abroad) or already issued are no longer pending, so they drop
+  // out of the badge.
+  cachedWarranty.forEach(r => {
+    if(r.brand !== brand) return;
+    if(r.issued || r.flag1 || r.flag3) return;
+    count++;
+  });
+
   return count;
 }
 
@@ -2791,7 +2806,8 @@ async function renderBrandStatus(brand, stock){
             const isW = !!s.isWarranty;
             const pct = s.minQty > 0 ? Math.round(Math.min(s.currentQty/s.minQty,1)*100) : 0;
             const numClass = (isW ? (s.currentQty <= 0) : (pct < 50)) ? 'crit' : 'warn';
-            const tintClass = (s.flag1 ? ' watch-tint-1' : '') + (s.flag2 ? ' watch-tint-2' : '');
+            const tintClass = (s.flag1 ? ' watch-tint-1' : '') + (s.flag2 ? ' watch-tint-2' : '')
+              + (isW && s.flag3 ? ' watch-dimmed' : '');
 
             let bodyExtra;
             if(isW){
@@ -2939,6 +2955,12 @@ async function renderBrandStatus(brand, stock){
           : "Возвращено в отслеживание.", "success");
         // notNeeded changes which items appear in the shortage list, so re-render.
         renderFromCache();
+      } else {
+        // Warranty claim: dim the card in place and refresh the badge count,
+        // which no longer includes claims ordered abroad.
+        const card = document.getElementById("watchCard-" + cb.dataset.idx);
+        if(card) card.classList.toggle("watch-dimmed", cb.checked);
+        renderSidebar();
       }
     };
   });
