@@ -488,6 +488,105 @@ select:focus{outline:none; border-color:var(--accent);}
 .name-field input{font-size:12.5px; padding:8px 10px;}
 .detect-note{font-size:12px; color:var(--text-dim); margin-top:10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;}
 .detect-note a{color:var(--accent); cursor:pointer; text-decoration:underline; font-weight:600;}
+
+/* ============ MOBILE / RESPONSIVE ============ */
+
+/* Top bar + backdrop exist only on small screens. */
+.mobile-bar{ display:none; }
+.sidebar-backdrop{ display:none; }
+
+@media (max-width: 860px){
+  .app{ display:block; }
+
+  /* Fixed top bar with the menu toggle */
+  .mobile-bar{
+    display:flex; align-items:center; gap:12px;
+    position:fixed; top:0; left:0; right:0; z-index:900;
+    height:54px; padding:0 14px;
+    background:var(--panel); border-bottom:1px solid var(--border);
+  }
+  .mobile-menu-btn{
+    background:var(--panel-alt); border:1px solid var(--border);
+    color:var(--text); font-size:18px; line-height:1;
+    width:38px; height:38px; border-radius:9px; cursor:pointer;
+  }
+  .mobile-title{
+    font-family:var(--display); font-size:13px; font-weight:700;
+    letter-spacing:.06em; text-transform:uppercase; color:var(--accent);
+  }
+
+  /* Sidebar becomes a slide-out drawer */
+  .sidebar{
+    position:fixed; top:0; left:0; bottom:0; z-index:1000;
+    width:270px; max-width:84vw;
+    transform:translateX(-100%); transition:transform .22s ease;
+    overflow-y:auto; padding-top:18px;
+  }
+  .sidebar.open{ transform:translateX(0); }
+
+  .sidebar-backdrop{
+    display:block; position:fixed; inset:0; z-index:999;
+    background:rgba(0,0,0,.5); opacity:0; pointer-events:none;
+    transition:opacity .22s ease;
+  }
+  .sidebar-backdrop.show{ opacity:1; pointer-events:auto; }
+
+  .main{ padding:70px 14px 50px 14px; max-width:100%; }
+
+  /* Headings and headers stack instead of sitting side by side */
+  .main-header{ flex-direction:column; align-items:flex-start; gap:6px; }
+  .main-header h2{ font-size:21px; }
+  .updated-at{ text-align:left; font-size:10.5px; }
+
+  .panel{ padding:15px 14px; border-radius:10px; }
+  .panel h3{ font-size:14.5px; }
+  .panel .hint{ font-size:12px; }
+
+  /* Cards go single-column so nothing is cramped */
+  .watch-grid{ grid-template-columns:1fr; }
+  .card-grid{ grid-template-columns:repeat(auto-fill, minmax(140px, 1fr)); gap:10px; }
+
+  /* Forms stack vertically */
+  .warranty-form{ flex-direction:column; align-items:stretch; gap:10px; padding:12px; }
+  .warranty-form > div{ flex:none; width:100%; min-width:0; }
+  .warranty-form .btn{ width:100%; }
+  .assign-form{ flex-direction:column; align-items:stretch; }
+  .assign-form > div{ width:100%; min-width:0; }
+  .assign-form .btn{ width:100%; }
+  .col-map{ grid-template-columns:1fr; }
+  .btn-row{ flex-wrap:wrap; }
+  .btn-row .btn{ flex:1 1 auto; }
+
+  /* Wide tables scroll sideways instead of squashing */
+  .panel > div[style*="overflow-y"]{ overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  table{ min-width:620px; }
+  .w-table{ min-width:900px; }
+  th{ font-size:9.5px; }
+  td{ font-size:12px; padding:9px 8px; }
+
+  .tabs{ gap:16px; overflow-x:auto; }
+  .tab{ white-space:nowrap; font-size:13px; }
+  .w-tabs{ overflow-x:auto; flex-wrap:nowrap; padding-bottom:10px; }
+  .w-tab{ flex:0 0 auto; }
+
+  .brand-chip-row{ max-width:100%; }
+  .dropzone{ padding:22px 12px; font-size:12.5px; }
+
+  /* Login screen fits comfortably on a phone */
+  .login-logo{ width:84px; height:84px; margin-bottom:26px; }
+  .login-box{ max-width:100%; }
+
+  .confirm-box{ padding:20px 18px; }
+  #toast{ left:14px; right:14px; bottom:14px; max-width:none; }
+}
+
+@media (max-width: 420px){
+  .main{ padding:66px 10px 40px 10px; }
+  .panel{ padding:13px 12px; }
+  .main-header h2{ font-size:19px; }
+  .card-grid{ grid-template-columns:1fr 1fr; }
+  .watch-card{ padding:11px 12px; }
+}
 </style>
 </head>
 <body>
@@ -507,6 +606,11 @@ select:focus{outline:none; border-color:var(--accent);}
 </div>
 
 <div class="app" id="appRoot" style="display:none;">
+  <div class="mobile-bar" id="mobileBar">
+    <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Меню">☰</button>
+    <span class="mobile-title">Склад запчастей</span>
+  </div>
+  <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
   <div class="sidebar">
     <div class="brand-header">
       <div class="eyebrow">Склад запчастей</div>
@@ -2629,6 +2733,36 @@ function applyTheme(theme){
 // The theme is a per-person display preference, so it's kept in this browser
 // rather than the shared server store (otherwise one colleague switching themes
 // would change it for everyone).
+// ---- Mobile sidebar drawer -------------------------------------------------
+// On phones the sidebar slides in over the content instead of taking a fixed
+// column, so the main area gets the full screen width.
+function openSidebar(){
+  document.querySelector(".sidebar").classList.add("open");
+  document.getElementById("sidebarBackdrop").classList.add("show");
+}
+function closeSidebar(){
+  document.querySelector(".sidebar").classList.remove("open");
+  document.getElementById("sidebarBackdrop").classList.remove("show");
+}
+function isMobileLayout(){ return window.matchMedia("(max-width: 860px)").matches; }
+
+function setupMobileNav(){
+  const btn = document.getElementById("mobileMenuBtn");
+  const backdrop = document.getElementById("sidebarBackdrop");
+  if(btn) btn.onclick = () => {
+    const sb = document.querySelector(".sidebar");
+    if(sb.classList.contains("open")) closeSidebar(); else openSidebar();
+  };
+  if(backdrop) backdrop.onclick = closeSidebar;
+
+  // Tapping anything inside the sidebar navigates, so close the drawer after it.
+  const sb = document.querySelector(".sidebar");
+  if(sb) sb.addEventListener("click", (e) => {
+    if(!isMobileLayout()) return;
+    if(e.target.closest(".brand-item")) closeSidebar();
+  });
+}
+
 function setupTheme(){
   let saved = "dark";
   try{ saved = window.localStorage.getItem(THEME_KEY) || "dark"; }catch(e){ saved = "dark"; }
@@ -2658,7 +2792,7 @@ function showLoginScreen(){
 
 function showApp(){
   document.getElementById("loginScreen").style.display = "none";
-  document.getElementById("appRoot").style.display = "flex";
+  document.getElementById("appRoot").style.display = "";
 }
 
 async function checkAuth(){
@@ -2742,6 +2876,7 @@ async function startApp(login){
 
 (async function init(){
   setupTheme();
+  setupMobileNav();
   document.getElementById("userNameInput").oninput = (e) => { currentUserName = e.target.value.trim(); };
 
   document.getElementById("loginBtn").onclick = doLogin;
