@@ -407,6 +407,10 @@ select:focus{outline:none; border-color:var(--accent);}
 .w-table tr.w-editing select{ font-size:12px; padding:6px 8px; }
 .w-edit-actions{ display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
 .w-row-actions{ display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+.audit-important{
+  color:var(--danger); font-weight:700;
+  font-family:var(--display); font-size:12px;
+}
 .w-tab-issued.active{ background:var(--success-dim); border-color:var(--success-border); color:var(--success); }
 .w-tab-issued.active .w-tab-count{ color:var(--success); border-color:var(--success-border); }
 .w-issued-tag{
@@ -1552,6 +1556,65 @@ async function createBackup(){
   }catch(e){ showToast("Ошибка: " + e.message, "error"); }
 }
 
+// ---- Audit log (admin only) ------------------------------------------------
+
+async function loadAuditLog(){
+  const box = document.getElementById("auditList");
+  if(!box) return;
+  try{
+    const res = await fetch('/api/audit');
+    if(res.status === 403){ box.innerHTML = ""; return; }
+    if(!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    const entries = data.entries || [];
+
+    if(entries.length === 0){
+      box.innerHTML = `<div class="hint" style="margin:0;">Записей пока нет.</div>`;
+      return;
+    }
+
+    // Only the most recent slice is rendered — the log can grow to thousands of
+    // rows and painting them all would slow the page down for no benefit.
+    const shown = entries.slice(0, 300);
+
+    box.innerHTML = `
+      <div class="hint" style="margin:0 0 10px 0;">Всего записей: ${entries.length}${entries.length > shown.length ? ` · показаны последние ${shown.length}` : ""}</div>
+      <input type="text" class="search-box" id="auditFilterBox" placeholder="Фильтр по журналу...">
+      <div style="max-height:420px; overflow-y:auto;">
+      <table>
+        <thead><tr><th style="width:170px;">Когда</th><th style="width:130px;">Кто</th><th style="width:190px;">Действие</th><th>Детали</th></tr></thead>
+        <tbody id="auditBody">
+          ${shown.map(e => {
+            const when = e.at ? new Date(e.at).toLocaleString("ru-RU") : "—";
+            const isImportant = /ВОССТАНОВЛЕНИЕ|Удаление|очищен/i.test(e.action || "");
+            return `
+            <tr data-search="${esc(((e.who||"")+" "+(e.action||"")+" "+(e.details||"")).toLowerCase())}">
+              <td class="mono">${esc(when)}</td>
+              <td>${esc(e.who || "—")}</td>
+              <td>${isImportant
+                    ? `<span class="audit-important">${esc(e.action || "")}</span>`
+                    : esc(e.action || "")}</td>
+              <td>${esc(e.details || "") || "<span style='color:var(--text-faint)'>—</span>"}</td>
+            </tr>`;
+          }).join("")}
+        </tbody>
+      </table>
+      </div>
+    `;
+
+    const filterBox = document.getElementById("auditFilterBox");
+    const rows = Array.from(document.querySelectorAll("#auditBody tr"));
+    if(filterBox) filterBox.oninput = debounce((ev) => {
+      const q = ev.target.value.toLowerCase().trim();
+      rows.forEach(tr => {
+        tr.style.display = (!q || tr.dataset.search.includes(q)) ? "" : "none";
+      });
+    }, 150);
+  }catch(e){
+    box.innerHTML = `<div class="hint" style="margin:0; color:var(--danger);">Не удалось загрузить журнал.</div>`;
+  }
+}
+
 async function renderHome(){
   const main = document.getElementById("main");
   const stock = cachedStock;
@@ -1597,6 +1660,20 @@ async function renderHome(){
         <button class="btn" id="backupBtn">Создать копию</button>
       </div>
       <div id="backupList"><div class="hint" style="margin:0;">Загрузка списка копий...</div></div>
+    </div>
+
+    <div class="panel">
+      <h3>📋 Журнал изменений</h3>
+      <p class="hint">Кто и что менял в системе. Записывается автоматически: загрузка базы, правки минимальных количеств, гарантийные заявки, входы в систему, работа с резервными копиями.</p>
+      <div class="assign-form" style="margin-bottom:14px;">
+        <div>
+          <label>Поиск</label>
+          <input type="text" id="auditSearch" placeholder="имя пользователя, действие...">
+        </div>
+        <button class="btn secondary small" id="auditRefreshBtn">Обновить</button>
+        <button class="btn danger-outline" id="auditClearBtn">Очистить журнал</button>
+      </div>
+      <div id="auditList"><div class="hint" style="margin:0;">Загрузка журнала...</div></div>
     </div>` : ""}
   `;
 
@@ -1618,6 +1695,27 @@ async function renderHome(){
     backupBtn.onclick = createBackup;
     loadBackupList();
   }
+
+  const auditRefreshBtn = document.getElementById("auditRefreshBtn");
+  if(auditRefreshBtn){
+    auditRefreshBtn.onclick = loadAuditLog;
+    loadAuditLog();
+  }
+
+  const auditClearBtn = document.getElementById("auditClearBtn");
+  if(auditClearBtn) auditClearBtn.onclick = () => {
+    confirmDialog(
+      "Очистить журнал изменений?",
+      "Все записи будут удалены безвозвратно. Сам факт очистки останется в журнале.",
+      async () => {
+        try{
+          await fetch('/api/audit', { method: 'DELETE' });
+          showToast("Журнал очищен.", "success");
+          loadAuditLog();
+        }catch(e){ showToast("Ошибка: " + e.message, "error"); }
+      }
+    );
+  };
 
   if(stock) await renderHomeResults(stock);
 }
