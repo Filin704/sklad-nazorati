@@ -101,7 +101,7 @@ async function kvListKeys(prefix) {
 // Passwords are never stored or compared in plain text at request time — they're
 // hashed once at startup and compared using a timing-safe comparison.
 
-const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const SESSION_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const sessions = new Map(); // token -> { login, expires }
 
 function hashPassword(pw) {
