@@ -185,6 +185,7 @@ app.post('/api/login', (req, res) => {
   res.setHeader('Set-Cookie',
     `sklad_session=${token}; HttpOnly; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}; SameSite=Lax`);
   res.json({ ok: true, login, role: user.role });
+  writeAudit({ login }, 'Вход в систему', '');
 });
 
 app.post('/api/logout', (req, res) => {
@@ -225,7 +226,8 @@ function restrictByRole(req, res, next) {
   const role = (req.session && req.session.role) || 'full';
 
   // Stored snapshots are managed only through the dedicated backup endpoints.
-  if (req.params && typeof req.params.key === 'string' && req.params.key.startsWith('__backup__')) {
+  if (req.params && typeof req.params.key === 'string' &&
+      (req.params.key.startsWith('__backup__') || req.params.key === '__audit_log__')) {
     return res.status(403).json({ error: 'forbidden' });
   }
 
@@ -268,17 +270,41 @@ app.get('/api/kv/:key', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+
+// Translates an internal storage key into a readable description for the log.
+function describeKey(key) {
+  if (key === 'brands_list') return 'Список брендов';
+  if (key === 'stock__GLOBAL_MIXED') return 'Загрузка базы склада';
+  if (key === 'warranty_records') return 'Гарантийные заявки';
+  if (key === 'car_models') return 'Модели автомобилей';
+  if (key === 'ignored_artikuls') return 'Список «не нужные»';
+  if (key === 'stock_history') return 'История остатков';
+  if (key.startsWith('thresh__')) return 'Минимальные количества: ' + key.slice(8);
+  return key;
+}
+
+// Some keys change on almost every page action and would drown the log.
+const AUDIT_SKIP_KEYS = new Set(['__connectivity_check__', 'stock_history']);
+
 app.put('/api/kv/:key', async (req, res) => {
   try {
-    await kvSet(req.params.key, req.body.value);
-    res.json({ key: req.params.key, value: req.body.value });
+    const key = req.params.key;
+    await kvSet(key, req.body.value);
+    res.json({ key, value: req.body.value });
+    if (!AUDIT_SKIP_KEYS.has(key)) {
+      writeAudit(req.session, 'Изменение', describeKey(key));
+    }
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.delete('/api/kv/:key', async (req, res) => {
   try {
-    await kvDelete(req.params.key);
-    res.json({ key: req.params.key, deleted: true });
+    const key = req.params.key;
+    await kvDelete(key);
+    res.json({ key, deleted: true });
+    if (!AUDIT_SKIP_KEYS.has(key)) {
+      writeAudit(req.session, 'Удаление', describeKey(key));
+    }
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -305,6 +331,51 @@ app.get('/api/kv-batch', async (req, res) => {
 // Backups are stored on the server itself under a reserved key prefix, so the
 // admin can snapshot and roll back without juggling files. Only the admin role
 // can see or use any of this.
+
+// --- Audit log -------------------------------------------------------------
+// Records who changed what. Written server-side from the session, so the entry
+// can't be forged by the client, and readable only by an admin.
+
+const AUDIT_KEY = '__audit_log__';
+const MAX_AUDIT_ENTRIES = 3000;
+
+async function writeAudit(session, action, details) {
+  try {
+    const raw = await kvGet(AUDIT_KEY);
+    let log = [];
+    if (raw !== undefined) { try { log = JSON.parse(raw) || []; } catch (e) { log = []; } }
+
+    log.push({
+      at: new Date().toISOString(),
+      who: (session && session.login) || 'guest',
+      action,
+      details: String(details || '').slice(0, 300)
+    });
+
+    if (log.length > MAX_AUDIT_ENTRIES) log = log.slice(-MAX_AUDIT_ENTRIES);
+    await kvSet(AUDIT_KEY, JSON.stringify(log));
+  } catch (e) {
+    // Logging must never break the operation the user actually asked for.
+    console.error('audit write failed:', e.message);
+  }
+}
+
+app.get('/api/audit', requireAdmin, async (req, res) => {
+  try {
+    const raw = await kvGet(AUDIT_KEY);
+    let log = [];
+    if (raw !== undefined) { try { log = JSON.parse(raw) || []; } catch (e) { log = []; } }
+    res.json({ entries: log.slice().reverse() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/audit', requireAdmin, async (req, res) => {
+  try {
+    await kvSet(AUDIT_KEY, JSON.stringify([]));
+    await writeAudit(req.session, 'audit_cleared', 'Журнал очищен');
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 const BACKUP_PREFIX = '__backup__';
 const MAX_BACKUPS = 20;
@@ -346,6 +417,7 @@ app.post('/api/backups', requireAdmin, async (req, res) => {
     }
 
     res.json({ ok: true, id, keyCount: keys.length });
+    writeAudit(req.session, 'Создана резервная копия', String((req.body && req.body.note) || ''));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -386,6 +458,7 @@ app.post('/api/backups/restore', requireAdmin, async (req, res) => {
       await kvSet(k, data[k]);
     }
     res.json({ ok: true, restored: keys.length });
+    writeAudit(req.session, 'ВОССТАНОВЛЕНИЕ из копии', 'Записей: ' + keys.length);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
