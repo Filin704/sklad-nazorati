@@ -407,6 +407,29 @@ select:focus{outline:none; border-color:var(--accent);}
 .w-table tr.w-editing select{ font-size:12px; padding:6px 8px; }
 .w-edit-actions{ display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
 .w-row-actions{ display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+/* ---- Collapsible sections ---- */
+.collapsible{ padding-top:0; padding-bottom:0; }
+.collapse-head{
+  display:flex; align-items:center; justify-content:space-between;
+  padding:16px 0; cursor:pointer; user-select:none;
+}
+.collapse-head h3{ margin:0; }
+.collapse-arrow{
+  color:var(--text-faint); font-size:14px; line-height:1;
+  transition:transform .22s ease;
+}
+.collapsible.open .collapse-arrow{ transform:rotate(180deg); color:var(--accent); }
+.collapse-head:hover h3{ color:var(--accent); }
+
+/* Curtain effect: collapsed to zero height, expands when open. */
+.collapse-body{
+  max-height:0; overflow:hidden; opacity:0;
+  transition:max-height .28s ease, opacity .2s ease, padding-bottom .28s ease;
+}
+.collapsible.open .collapse-body{
+  max-height:1600px; opacity:1; padding-bottom:18px;
+}
+
 .newly-low-panel{
   border-color:var(--danger-border);
   border-left:3px solid var(--danger);
@@ -1654,31 +1677,41 @@ async function renderHome(){
     </div>
 
     ${isAdmin() ? `
-    <div class="panel">
-      <h3>💾 Резервные копии</h3>
-      <p class="hint">Копии хранятся прямо на сервере. Сделайте копию перед крупными изменениями — при необходимости можно вернуться к любому сохранённому состоянию. Хранятся последние 20 копий.</p>
-      <div class="assign-form" style="margin-bottom:14px;">
-        <div>
-          <label>Примечание (не обязательно)</label>
-          <input type="text" id="backupNote" placeholder="напр. перед чисткой Chery">
-        </div>
-        <button class="btn" id="backupBtn">Создать копию</button>
+    <div class="panel collapsible" data-collapse="backup">
+      <div class="collapse-head">
+        <h3>💾 Резервные копии</h3>
+        <span class="collapse-arrow">▾</span>
       </div>
-      <div id="backupList"><div class="hint" style="margin:0;">Загрузка списка копий...</div></div>
+      <div class="collapse-body">
+        <p class="hint">Копии хранятся прямо на сервере. Сделайте копию перед крупными изменениями — при необходимости можно вернуться к любому сохранённому состоянию. Хранятся последние 20 копий.</p>
+        <div class="assign-form" style="margin-bottom:14px;">
+          <div>
+            <label>Примечание (не обязательно)</label>
+            <input type="text" id="backupNote" placeholder="напр. перед чисткой Chery">
+          </div>
+          <button class="btn" id="backupBtn">Создать копию</button>
+        </div>
+        <div id="backupList"><div class="hint" style="margin:0;">Загрузка списка копий...</div></div>
+      </div>
     </div>
 
-    <div class="panel">
-      <h3>📋 Журнал изменений</h3>
-      <p class="hint">Кто и что менял в системе. Записывается автоматически: загрузка базы, правки минимальных количеств, гарантийные заявки, входы в систему, работа с резервными копиями.</p>
-      <div class="assign-form" style="margin-bottom:14px;">
-        <div>
-          <label>Поиск</label>
-          <input type="text" id="auditSearch" placeholder="имя пользователя, действие...">
-        </div>
-        <button class="btn secondary small" id="auditRefreshBtn">Обновить</button>
-        <button class="btn danger-outline" id="auditClearBtn">Очистить журнал</button>
+    <div class="panel collapsible" data-collapse="audit">
+      <div class="collapse-head">
+        <h3>📋 Журнал изменений</h3>
+        <span class="collapse-arrow">▾</span>
       </div>
-      <div id="auditList"><div class="hint" style="margin:0;">Загрузка журнала...</div></div>
+      <div class="collapse-body">
+        <p class="hint">Кто и что менял в системе. Записывается автоматически: загрузка базы, правки минимальных количеств, гарантийные заявки, входы в систему, работа с резервными копиями.</p>
+        <div class="assign-form" style="margin-bottom:14px;">
+          <div>
+            <label>Поиск</label>
+            <input type="text" id="auditSearch" placeholder="имя пользователя, действие...">
+          </div>
+          <button class="btn secondary small" id="auditRefreshBtn">Обновить</button>
+          <button class="btn danger-outline" id="auditClearBtn">Очистить журнал</button>
+        </div>
+        <div id="auditList"><div class="hint" style="margin:0;">Загрузка журнала...</div></div>
+      </div>
     </div>` : ""}
   `;
 
@@ -1696,16 +1729,10 @@ async function renderHome(){
   fi.onchange = (e) => { if(e.target.files[0]) handleFile(e.target.files[0]); };
 
   const backupBtn = document.getElementById("backupBtn");
-  if(backupBtn){
-    backupBtn.onclick = createBackup;
-    loadBackupList();
-  }
+  if(backupBtn) backupBtn.onclick = createBackup;
 
   const auditRefreshBtn = document.getElementById("auditRefreshBtn");
-  if(auditRefreshBtn){
-    auditRefreshBtn.onclick = loadAuditLog;
-    loadAuditLog();
-  }
+  if(auditRefreshBtn) auditRefreshBtn.onclick = loadAuditLog;
 
   const auditClearBtn = document.getElementById("auditClearBtn");
   if(auditClearBtn) auditClearBtn.onclick = () => {
@@ -1721,6 +1748,26 @@ async function renderHome(){
       }
     );
   };
+
+  // Collapsible admin sections. Their contents are fetched the first time the
+  // section is opened rather than on every page load, so the page stays fast.
+  const loadedSections = {};
+  document.querySelectorAll(".collapsible .collapse-head").forEach(head => {
+    head.onclick = () => {
+      const panel = head.closest(".collapsible");
+      const wasOpen = panel.classList.contains("open");
+      panel.classList.toggle("open", !wasOpen);
+
+      if(!wasOpen){
+        const which = panel.dataset.collapse;
+        if(!loadedSections[which]){
+          loadedSections[which] = true;
+          if(which === "backup") loadBackupList();
+          if(which === "audit")  loadAuditLog();
+        }
+      }
+    };
+  });
 
   if(stock) await renderHomeResults(stock);
 }
