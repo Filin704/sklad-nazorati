@@ -110,6 +110,7 @@ function hashPassword(pw) {
 
 // Users come from APP_USERS, formatted as:
 //   login:password           -> full access
+//   login:password:admin     -> full access + backup management
 //   login:password:warranty  -> may only read/write warranty data
 function parseUsers() {
   const raw = process.env.APP_USERS || '';
@@ -119,12 +120,10 @@ function parseUsers() {
     if (parts.length < 2) return;
     const login = parts[0].trim();
     const pw = parts[1].trim();
-    const role = (parts[2] || 'full').trim().toLowerCase();
+    const roleRaw = (parts[2] || 'full').trim().toLowerCase();
+    const role = (roleRaw === 'warranty' || roleRaw === 'admin') ? roleRaw : 'full';
     if (login && pw) {
-      users[login.toLowerCase()] = {
-        hash: hashPassword(pw),
-        role: role === 'warranty' ? 'warranty' : 'full'
-      };
+      users[login.toLowerCase()] = { hash: hashPassword(pw), role };
     }
   });
   return users;
@@ -224,6 +223,12 @@ function keyAllowedForRole(key, role) {
 
 function restrictByRole(req, res, next) {
   const role = (req.session && req.session.role) || 'full';
+
+  // Stored snapshots are managed only through the dedicated backup endpoints.
+  if (req.params && typeof req.params.key === 'string' && req.params.key.startsWith('__backup__')) {
+    return res.status(403).json({ error: 'forbidden' });
+  }
+
   if (role !== 'warranty') return next();
 
   // Single-key routes: /api/kv/:key
@@ -293,6 +298,115 @@ app.get('/api/kv-batch', async (req, res) => {
     if (keys.length === 0) return res.json({ values: {} });
     const values = await kvGetBatch(keys);
     res.json({ values });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// --- Backup / restore ------------------------------------------------------
+// Backups are stored on the server itself under a reserved key prefix, so the
+// admin can snapshot and roll back without juggling files. Only the admin role
+// can see or use any of this.
+
+const BACKUP_PREFIX = '__backup__';
+const MAX_BACKUPS = 20;
+
+function requireAdmin(req, res, next) {
+  if (!AUTH_ENABLED) return next();
+  const s = getSession(req);
+  if (!s) return res.status(401).json({ error: 'unauthorized' });
+  if ((s.role || 'full') !== 'admin') return res.status(403).json({ error: 'forbidden' });
+  req.session = s;
+  next();
+}
+
+// Collects every real data key, deliberately skipping stored backups so a
+// snapshot never contains earlier snapshots.
+async function collectDataKeys() {
+  const keys = await kvListKeys('');
+  return keys.filter(k => !k.startsWith(BACKUP_PREFIX));
+}
+
+app.post('/api/backups', requireAdmin, async (req, res) => {
+  try {
+    const keys = await collectDataKeys();
+    const values = await kvGetBatch(keys);
+
+    const id = BACKUP_PREFIX + Date.now();
+    await kvSet(id, JSON.stringify({
+      createdAt: new Date().toISOString(),
+      createdBy: (req.session && req.session.login) || '',
+      note: String((req.body && req.body.note) || '').slice(0, 120),
+      keyCount: keys.length,
+      data: values
+    }));
+
+    // Keep only the newest snapshots so storage doesn't grow without bound.
+    const all = (await kvListKeys(BACKUP_PREFIX)).sort();
+    while (all.length > MAX_BACKUPS) {
+      await kvDelete(all.shift());
+    }
+
+    res.json({ ok: true, id, keyCount: keys.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/backups', requireAdmin, async (req, res) => {
+  try {
+    const keys = (await kvListKeys(BACKUP_PREFIX)).sort().reverse();
+    const raw = await kvGetBatch(keys);
+    const list = keys.map(k => {
+      let meta = {};
+      try { meta = JSON.parse(raw[k]); } catch (e) { meta = {}; }
+      return {
+        id: k,
+        createdAt: meta.createdAt || null,
+        createdBy: meta.createdBy || '',
+        note: meta.note || '',
+        keyCount: meta.keyCount || 0
+      };
+    });
+    res.json({ backups: list });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/backups/restore', requireAdmin, async (req, res) => {
+  try {
+    const id = String((req.body && req.body.id) || '');
+    if (!id.startsWith(BACKUP_PREFIX)) return res.status(400).json({ error: 'invalid_id' });
+
+    const raw = await kvGet(id);
+    if (raw === undefined) return res.status(404).json({ error: 'not_found' });
+
+    const snapshot = JSON.parse(raw);
+    const data = snapshot && snapshot.data;
+    if (!data || typeof data !== 'object') return res.status(400).json({ error: 'invalid_backup' });
+
+    const keys = Object.keys(data);
+    for (const k of keys) {
+      if (k.startsWith(BACKUP_PREFIX)) continue;
+      await kvSet(k, data[k]);
+    }
+    res.json({ ok: true, restored: keys.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/backups/:id', requireAdmin, async (req, res) => {
+  try {
+    const id = String(req.params.id || '');
+    if (!id.startsWith(BACKUP_PREFIX)) return res.status(400).json({ error: 'invalid_id' });
+    await kvDelete(id);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Download a stored snapshot as a file, for keeping a copy outside the server.
+app.get('/api/backups/:id/download', requireAdmin, async (req, res) => {
+  try {
+    const id = String(req.params.id || '');
+    if (!id.startsWith(BACKUP_PREFIX)) return res.status(400).json({ error: 'invalid_id' });
+    const raw = await kvGet(id);
+    if (raw === undefined) return res.status(404).json({ error: 'not_found' });
+    res.setHeader('Content-Type', 'application/json');
+    res.send(raw);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
