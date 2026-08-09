@@ -1434,6 +1434,124 @@ async function renderWarranty(){
   });
 }
 
+// ---- Backup / restore (admin only) ----------------------------------------
+// Snapshots live on the server, so restoring is a couple of clicks rather than
+// hunting for a file. Each entry can also be downloaded for off-site keeping.
+
+async function loadBackupList(){
+  const box = document.getElementById("backupList");
+  if(!box) return;
+  try{
+    const res = await fetch('/api/backups');
+    if(res.status === 403){ box.innerHTML = ""; return; }
+    if(!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    const list = data.backups || [];
+
+    if(list.length === 0){
+      box.innerHTML = `<div class="hint" style="margin:0;">Копий пока нет.</div>`;
+      return;
+    }
+
+    box.innerHTML = `
+      <table>
+        <thead><tr><th>Дата создания</th><th>Кто</th><th>Примечание</th><th>Записей</th><th style="width:230px;"></th></tr></thead>
+        <tbody>
+          ${list.map(b => `
+            <tr>
+              <td class="mono">${esc(b.createdAt ? new Date(b.createdAt).toLocaleString("ru-RU") : "—")}</td>
+              <td>${esc(b.createdBy || "—")}</td>
+              <td>${esc(b.note || "") || "<span style='color:var(--text-faint)'>—</span>"}</td>
+              <td class="mono" style="color:var(--text);">${b.keyCount}</td>
+              <td>
+                <div class="w-row-actions">
+                  <button class="btn small bk-restore" data-id="${esc(b.id)}">Восстановить</button>
+                  <button class="btn secondary small bk-download" data-id="${esc(b.id)}">Скачать</button>
+                  <button class="btn danger-outline bk-delete" data-id="${esc(b.id)}">Удалить</button>
+                </div>
+              </td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
+
+    box.querySelectorAll(".bk-restore").forEach(btn => {
+      btn.onclick = () => {
+        const row = btn.closest("tr");
+        const when = row.querySelector("td").textContent;
+        confirmDialog(
+          "Восстановить данные из копии?",
+          `Копия от <b>${esc(when)}</b><br><br>Текущие данные будут <b>перезаписаны</b>. Это действие нельзя отменить.`,
+          async () => {
+            showToast("Восстанавливаем...", "info");
+            try{
+              const r = await fetch('/api/backups/restore', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({ id: btn.dataset.id })
+              });
+              const out = await r.json();
+              if(!r.ok || !out.ok){ showToast("Ошибка: " + (out.error || r.status), "error"); return; }
+              showToast("Восстановлено " + out.restored + " записей.", "success");
+              await loadBrands();
+              await renderAll();
+            }catch(e){ showToast("Ошибка: " + e.message, "error"); }
+          }
+        );
+      };
+    });
+
+    box.querySelectorAll(".bk-download").forEach(btn => {
+      btn.onclick = async () => {
+        try{
+          const r = await fetch('/api/backups/' + encodeURIComponent(btn.dataset.id) + '/download');
+          if(!r.ok) throw new Error("HTTP " + r.status);
+          const text = await r.text();
+          const blob = new Blob([text], { type: "application/json" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "sklad-backup-" + todayKey() + ".json";
+          document.body.appendChild(a); a.click(); document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          showToast("Файл скачивается...", "success");
+        }catch(e){ showToast("Не удалось скачать: " + e.message, "error"); }
+      };
+    });
+
+    box.querySelectorAll(".bk-delete").forEach(btn => {
+      btn.onclick = () => {
+        confirmDialog("Удалить копию?", "Эту резервную копию нельзя будет восстановить.", async () => {
+          try{
+            await fetch('/api/backups/' + encodeURIComponent(btn.dataset.id), { method:'DELETE' });
+            showToast("Копия удалена.", "success");
+            loadBackupList();
+          }catch(e){ showToast("Ошибка: " + e.message, "error"); }
+        });
+      };
+    });
+  }catch(e){
+    box.innerHTML = `<div class="hint" style="margin:0; color:var(--danger);">Не удалось загрузить список копий.</div>`;
+  }
+}
+
+async function createBackup(){
+  const noteEl = document.getElementById("backupNote");
+  const note = noteEl ? noteEl.value.trim() : "";
+  showToast("Создаём копию...", "info");
+  try{
+    const res = await fetch('/api/backups', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ note })
+    });
+    const out = await res.json();
+    if(!res.ok || !out.ok){ showToast("Ошибка: " + (out.error || res.status), "error"); return; }
+    if(noteEl) noteEl.value = "";
+    showToast("Копия создана (" + out.keyCount + " записей).", "success");
+    loadBackupList();
+  }catch(e){ showToast("Ошибка: " + e.message, "error"); }
+}
+
 async function renderHome(){
   const main = document.getElementById("main");
   const stock = cachedStock;
@@ -1466,6 +1584,20 @@ async function renderHome(){
       <input type="file" id="fileInput" accept=".xlsx,.xls,.csv">
       <div id="mapArea"></div>
     </div>
+
+    ${isAdmin() ? `
+    <div class="panel">
+      <h3>💾 Резервные копии</h3>
+      <p class="hint">Копии хранятся прямо на сервере. Сделайте копию перед крупными изменениями — при необходимости можно вернуться к любому сохранённому состоянию. Хранятся последние 20 копий.</p>
+      <div class="assign-form" style="margin-bottom:14px;">
+        <div>
+          <label>Примечание (не обязательно)</label>
+          <input type="text" id="backupNote" placeholder="напр. перед чисткой Chery">
+        </div>
+        <button class="btn" id="backupBtn">Создать копию</button>
+      </div>
+      <div id="backupList"><div class="hint" style="margin:0;">Загрузка списка копий...</div></div>
+    </div>` : ""}
   `;
 
   const searchBtn = document.getElementById("artikulSearchBtn");
@@ -1480,6 +1612,12 @@ async function renderHome(){
   dz.ondragleave = () => dz.classList.remove("drag");
   dz.ondrop = (e) => { e.preventDefault(); dz.classList.remove("drag"); if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); };
   fi.onchange = (e) => { if(e.target.files[0]) handleFile(e.target.files[0]); };
+
+  const backupBtn = document.getElementById("backupBtn");
+  if(backupBtn){
+    backupBtn.onclick = createBackup;
+    loadBackupList();
+  }
 
   if(stock) await renderHomeResults(stock);
 }
@@ -2782,6 +2920,7 @@ function setupTheme(){
 let authDisabled = false;
 let currentRole = 'full';
 function isWarrantyOnly(){ return currentRole === 'warranty'; }
+function isAdmin(){ return currentRole === 'admin'; }
 
 function showLoginScreen(){
   document.getElementById("loginScreen").style.display = "flex";
