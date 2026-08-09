@@ -407,6 +407,11 @@ select:focus{outline:none; border-color:var(--accent);}
 .w-table tr.w-editing select{ font-size:12px; padding:6px 8px; }
 .w-edit-actions{ display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
 .w-row-actions{ display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+.newly-low-panel{
+  border-color:var(--danger-border);
+  border-left:3px solid var(--danger);
+}
+.newly-low-panel h3{ color:var(--danger); }
 .audit-important{
   color:var(--danger); font-weight:700;
   font-family:var(--display); font-size:12px;
@@ -2099,7 +2104,8 @@ function renderColumnMap(){
 // Builds a per-brand shortage summary and sends it to Telegram (if the bot is
 // configured on the server). Runs after an upload so the manager gets the
 // day's picture without opening the site.
-async function sendTelegramSummary(){
+async function sendTelegramSummary(newlyLow){
+  newlyLow = newlyLow || [];
   const lines = [];
   let total = 0;
 
@@ -2137,7 +2143,17 @@ async function sendTelegramSummary(){
     ? `📦 <b>Склад обновлён</b>${currentUserName ? " · " + currentUserName : ""}\nНиже минимума: <b>${total}</b>`
     : `📦 <b>Склад обновлён</b>${currentUserName ? " · " + currentUserName : ""}\n✅ Все позиции в норме`;
 
-  const text = header + lines.join("\n");
+  // The items that only just dropped go first — that's the actionable news.
+  let newBlock = "";
+  if(newlyLow.length > 0){
+    const rows = newlyLow.slice(0, 20).map(x =>
+      `• ${x.name || x.artikul} (${x.artikul}) — ${x.brand}: было ${x.before} → стало ${x.after} (мин. ${x.minQty})`
+    );
+    if(newlyLow.length > 20) rows.push(`… и ещё ${newlyLow.length - 20}`);
+    newBlock = `\n\n🆕 <b>Опустились до минимума: ${newlyLow.length}</b>\n` + rows.join("\n");
+  }
+
+  const text = header + newBlock + (lines.length ? "\n" : "") + lines.join("\n");
 
   try{
     const res = await fetch('/api/notify', {
@@ -2209,18 +2225,95 @@ async function processColumns(aIdx, qIdx, nIdx, sIdx){
     return;
   }
 
+  // Capture the previous state before overwriting it, so we can tell which
+  // items only NOW dropped to their minimum rather than re-reporting old ones.
+  const previousStock = cachedStock;
+
   const stockData = { updatedAt: Date.now(), items, uploadedBy: currentUserName };
   await saveGlobalStock(stockData);
   cachedStock = stockData;
   cachedHistory = await recordHistorySnapshot(items);
   await syncNamesFromBase(items);
   parsedRows = null; parsedHeaders = null;
+
+  const newlyLow = findNewlyLowItems(previousStock, stockData);
+
   await renderHomeResults(stockData);
   await renderSidebar();
   const ua = document.getElementById("updatedAt");
   if(ua) ua.textContent = "Последняя загрузка: " + new Date(stockData.updatedAt).toLocaleString("ru-RU") + (stockData.uploadedBy ? " · " + esc(stockData.uploadedBy) : "");
 
-  sendTelegramSummary();
+  if(newlyLow.length > 0){
+    showNewlyLowBanner(newlyLow);
+    showToast("Внимание: " + newlyLow.length + " новых позиций опустились до минимума.", "warning");
+  }
+
+  sendTelegramSummary(newlyLow);
+}
+
+// Compares the previous upload with the new one and returns the tracked items
+// that were fine before and have now reached (or fallen below) their minimum.
+// On the very first upload there's nothing to compare against, so nothing is
+// reported as "new" — otherwise the whole shortage list would be flagged.
+function findNewlyLowItems(previousStock, newStock){
+  if(!previousStock || !previousStock.items || previousStock.items.length === 0) return [];
+
+  const prevQty = {};
+  previousStock.items.forEach(it => { prevQty[normKey(it.artikul)] = Number(it.qty) || 0; });
+  const newQty = {};
+  newStock.items.forEach(it => { newQty[normKey(it.artikul)] = Number(it.qty) || 0; });
+
+  const result = [];
+  brands.forEach(b => {
+    const th = cachedThresholdsByBrand[b] || {};
+    Object.keys(th).forEach(art => {
+      const t = th[art];
+      if(t.notNeeded || t.flag1) return;
+
+      const key = normKey(art);
+      // An artikul missing from a file means zero on the shelf.
+      const before = prevQty[key] !== undefined ? prevQty[key] : 0;
+      const after  = newQty[key]  !== undefined ? newQty[key]  : 0;
+
+      const wasOk = before > t.minQty;
+      const isLow = after <= t.minQty;
+      if(wasOk && isLow){
+        result.push({ brand: b, artikul: art, name: t.name || "", before, after, minQty: t.minQty });
+      }
+    });
+  });
+  return result;
+}
+
+// Shows the newly-dropped items right on the page, so the change isn't missed
+// even if Telegram isn't set up.
+function showNewlyLowBanner(list){
+  const container = document.getElementById("homeResults");
+  if(!container) return;
+  const box = document.createElement("div");
+  box.className = "panel newly-low-panel";
+  box.innerHTML = `
+    <h3>🆕 Опустились до минимума при этой загрузке (${list.length})</h3>
+    <p class="hint">Эти позиции были в норме на прошлой загрузке, а теперь достигли минимума.</p>
+    <div style="max-height:300px; overflow-y:auto;">
+    <table>
+      <thead><tr><th>Бренд</th><th>Артикул</th><th>Наименование</th><th>Было</th><th>Стало</th><th>Минимум</th></tr></thead>
+      <tbody>
+        ${list.map(x => `
+          <tr>
+            <td>${esc(x.brand)}</td>
+            <td class="mono">${esc(x.artikul)}</td>
+            <td>${esc(x.name) || "<span style='color:var(--text-faint)'>—</span>"}</td>
+            <td class="mono" style="color:var(--text);">${x.before}</td>
+            <td class="mono" style="color:var(--danger);">${x.after}</td>
+            <td class="mono" style="color:var(--text);">${x.minQty}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+    </div>
+  `;
+  container.prepend(box);
 }
 
 async function renderHomeResults(stock){
