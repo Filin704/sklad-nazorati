@@ -833,9 +833,14 @@ async function getHistory(){
 }
 async function saveHistory(data){ await storage.set(HISTORY_KEY, JSON.stringify(data)); }
 
+// Must produce the same day key as the server (see ingest.js), otherwise a
+// manual upload and an automatic one on the same working day would be filed
+// under two different dates.
+const TZ_OFFSET_HOURS = 5; // Asia/Tashkent
+
 function todayKey(){
-  const d = new Date();
-  return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+  const d = new Date(Date.now() + TZ_OFFSET_HOURS * 60 * 60 * 1000);
+  return d.getUTCFullYear() + "-" + String(d.getUTCMonth()+1).padStart(2,"0") + "-" + String(d.getUTCDate()).padStart(2,"0");
 }
 
 // Records today's quantities into history, replacing today's entry if the base is
@@ -1000,6 +1005,9 @@ const MIN_OBSERVED_DAYS = 7;    // need at least a week of history to say anythi
 const MIN_DATA_POINTS = 3;      // and at least 3 separate snapshots
 
 function analyzeConsumption(artikulKey){
+  // History holds exactly ONE entry per calendar day — each upload overwrites
+  // that day's entry, so the last upload of the day is what counts. Uploading
+  // several times a day therefore does not distort the rate.
   const dates = Object.keys(cachedHistory).sort();
   if(dates.length < MIN_DATA_POINTS) return null;
 
@@ -1011,9 +1019,7 @@ function analyzeConsumption(artikulKey){
   });
   if(points.length < MIN_DATA_POINTS) return null;
 
-  // Real elapsed calendar time from first to last observation. Using this
-  // (instead of summing per-step gaps) prevents several uploads in one day
-  // from inflating the rate.
+  // Real elapsed calendar time from the first to the last observed day.
   const firstDate = new Date(points[0].date);
   const lastDate = new Date(points[points.length - 1].date);
   const observedDays = Math.round((lastDate - firstDate) / 86400000);
