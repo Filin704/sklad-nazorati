@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { MongoClient } = require('mongodb');
+const ingest = require('./ingest');
 
 const app = express();
 app.use(express.json({ limit: '15mb' }));
@@ -482,6 +483,64 @@ app.get('/api/backups/:id/download', requireAdmin, async (req, res) => {
     res.send(raw);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+// --- Automatic ingest ------------------------------------------------------
+// A small watcher on the office PC posts the exported file here whenever it
+// appears in a folder, so the daily base updates without anyone opening the site.
+// Authenticated with a shared token instead of a session, since no browser is
+// involved.
+
+app.post('/api/ingest',
+  express.raw({ type: 'application/octet-stream', limit: '25mb' }),
+  async (req, res) => {
+    const expected = process.env.INGEST_TOKEN;
+    if (!expected) {
+      return res.status(503).json({ error: 'ingest_disabled' });
+    }
+    const provided = req.get('X-Ingest-Token') || '';
+    if (provided.length !== expected.length ||
+        !crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(expected))) {
+      return res.status(401).json({ error: 'bad_token' });
+    }
+
+    if (!req.body || !req.body.length) {
+      return res.status(400).json({ error: 'empty_body' });
+    }
+
+    try {
+      const parsed = ingest.parseWorkbook(req.body);
+      const who = req.get('X-Ingest-Source') || 'auto';
+      const result = await ingest.applyStockUpdate({ kvGet, kvSet }, parsed.items, who);
+
+      res.json({
+        ok: true,
+        items: result.itemCount,
+        newlyLow: result.newlyLow.length,
+        totalShort: result.totalShort,
+        columns: parsed.columns
+      });
+
+      writeAudit({ login: who }, 'Автозагрузка базы',
+        `Позиций: ${result.itemCount}, новых ниже минимума: ${result.newlyLow.length}`);
+
+      // Notification is best-effort and must not delay the response.
+      const token = process.env.TELEGRAM_BOT_TOKEN;
+      const chatId = process.env.TELEGRAM_CHAT_ID;
+      if (token && chatId) {
+        fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text: ingest.buildTelegramText(result, who).slice(0, 4000),
+            parse_mode: 'HTML'
+          })
+        }).catch(() => {});
+      }
+    } catch (e) {
+      res.status(400).json({ error: e.message });
+    }
+  });
 
 app.get('/api/health', (req, res) => res.json({ ok: true, db: !!collection }));
 
