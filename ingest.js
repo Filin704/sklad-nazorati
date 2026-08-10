@@ -16,11 +16,16 @@ function normKey(s) {
 
 function threshKey(b) { return 'thresh__' + normKey(b); }
 
+// The server runs in UTC while the warehouse works on local time, so an upload
+// made after midnight local time would otherwise be filed under the previous
+// day. TZ_OFFSET_HOURS keeps the date key aligned with the working day.
+const TZ_OFFSET_HOURS = Number(process.env.TZ_OFFSET_HOURS || 5); // Asia/Tashkent
+
 function todayKey() {
-  const d = new Date();
-  return d.getFullYear() + '-' +
-    String(d.getMonth() + 1).padStart(2, '0') + '-' +
-    String(d.getDate()).padStart(2, '0');
+  const d = new Date(Date.now() + TZ_OFFSET_HOURS * 60 * 60 * 1000);
+  return d.getUTCFullYear() + '-' +
+    String(d.getUTCMonth() + 1).padStart(2, '0') + '-' +
+    String(d.getUTCDate()).padStart(2, '0');
 }
 
 // Values like "8 593,700" use a space for thousands and a comma for decimals.
