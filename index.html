@@ -1981,40 +1981,6 @@ async function renderHome(){
       <div id="artikulSearchResults"></div>
     </div>
 
-    <div class="panel">
-      <h3>📊 Статистика расхода</h3>
-      <p class="hint">Что уходит быстрее всего. Считается по ежедневной истории: за день берётся последняя загрузка, поступления товара расходом не считаются.</p>
-
-      <div class="stat-controls">
-        <div class="seg" id="rangeSeg">
-          <button class="seg-btn active" data-range="7">7 дней</button>
-          <button class="seg-btn" data-range="30">30 дней</button>
-          <button class="seg-btn" data-range="0">Всё время</button>
-        </div>
-      </div>
-
-      <div id="statRankWrap">
-        <div class="hint" style="margin:0;">Загрузка...</div>
-      </div>
-
-      <div id="statDetail" style="display:none; margin-top:22px; padding-top:20px; border-top:1px solid var(--border);">
-        <div class="stat-detail-head">
-          <div>
-            <div id="statDetailName" style="font-weight:600; font-size:14.5px;"></div>
-            <div id="statDetailArt" class="mono" style="font-size:11.5px; margin-top:2px;"></div>
-          </div>
-          <div class="seg" id="granSeg">
-            <button class="seg-btn active" data-gran="day">По дням</button>
-            <button class="seg-btn" data-gran="week">По неделям</button>
-            <button class="seg-btn" data-gran="month">По месяцам</button>
-          </div>
-        </div>
-        <div style="position:relative; width:100%; height:230px; margin-top:14px;">
-          <canvas id="statDetailChart" role="img" aria-label="Динамика расхода выбранного товара"></canvas>
-        </div>
-      </div>
-    </div>
-
     <div id="homeResults"></div>
 
     <div class="panel">
@@ -2026,6 +1992,45 @@ async function renderHome(){
       </div>
       <input type="file" id="fileInput" accept=".xlsx,.xls,.csv">
       <div id="mapArea"></div>
+    </div>
+
+    <div class="panel collapsible" data-collapse="stats">
+      <div class="collapse-head">
+        <h3>📊 Статистика расхода</h3>
+        <span class="collapse-arrow">▾</span>
+      </div>
+      <div class="collapse-body">
+        <p class="hint">Что уходит быстрее всего. Считается по ежедневной истории: за день берётся последняя загрузка, поступления товара расходом не считаются.</p>
+
+        <div class="stat-controls">
+          <div class="seg" id="rangeSeg">
+            <button class="seg-btn active" data-range="7">7 дней</button>
+            <button class="seg-btn" data-range="30">30 дней</button>
+            <button class="seg-btn" data-range="0">Всё время</button>
+          </div>
+        </div>
+
+        <div id="statRankWrap">
+          <div class="hint" style="margin:0;">Загрузка...</div>
+        </div>
+
+        <div id="statDetail" style="display:none; margin-top:22px; padding-top:20px; border-top:1px solid var(--border);">
+          <div class="stat-detail-head">
+            <div>
+              <div id="statDetailName" style="font-weight:600; font-size:14.5px;"></div>
+              <div id="statDetailArt" class="mono" style="font-size:11.5px; margin-top:2px;"></div>
+            </div>
+            <div class="seg" id="granSeg">
+              <button class="seg-btn active" data-gran="day">По дням</button>
+              <button class="seg-btn" data-gran="week">По неделям</button>
+              <button class="seg-btn" data-gran="month">По месяцам</button>
+            </div>
+          </div>
+          <div style="position:relative; width:100%; height:230px; margin-top:14px;">
+            <canvas id="statDetailChart" role="img" aria-label="Динамика расхода выбранного товара"></canvas>
+          </div>
+        </div>
+      </div>
     </div>
 
     ${isAdmin() ? `
@@ -2073,7 +2078,6 @@ async function renderHome(){
   searchInput.onkeydown = (e) => { if(e.key === "Enter") searchArtikul(searchInput.value.trim()); };
 
   setupStatControls();
-  renderStats();
 
   const dz = document.getElementById("dropzone");
   const fi = document.getElementById("fileInput");
@@ -2119,6 +2123,9 @@ async function renderHome(){
           loadedSections[which] = true;
           if(which === "backup") loadBackupList();
           if(which === "audit")  loadAuditLog();
+          // Charts need a visible container to measure themselves correctly,
+          // so they are drawn just after the section expands.
+          if(which === "stats")  setTimeout(renderStats, 60);
         }
       }
     };
