@@ -468,6 +468,28 @@ select:focus{outline:none; border-color:var(--accent);}
   max-height:1600px; opacity:1; padding-bottom:18px;
 }
 
+/* ---- Install hint (iOS) ---- */
+.install-hint{
+  display:none; position:fixed; z-index:14000;
+  left:12px; right:12px; bottom:calc(14px + env(safe-area-inset-bottom));
+  background:var(--panel-solid); border:1px solid var(--accent-dim);
+  border-radius:var(--radius); padding:16px 40px 16px 18px;
+  box-shadow:0 12px 34px var(--shadow);
+}
+.install-hint.show{ display:block; }
+.install-hint-title{
+  font-family:var(--serif); font-size:16px; font-weight:700;
+  color:var(--text); margin-bottom:6px;
+}
+.install-hint-body{ font-size:13px; color:var(--text-dim); line-height:1.55; }
+.install-hint-body b{ color:var(--accent); }
+.install-hint-close{
+  position:absolute; top:10px; right:12px;
+  background:none; border:none; color:var(--text-faint);
+  font-size:22px; line-height:1; cursor:pointer; padding:4px 8px;
+}
+.install-hint-close:hover{ color:var(--text); }
+
 /* ---- Statistics ---- */
 .stat-controls{ display:flex; justify-content:flex-end; margin-bottom:14px; }
 .seg{
@@ -599,26 +621,15 @@ select:focus{outline:none; border-color:var(--accent);}
 @media (max-width: 860px){
   .app{ display:block; }
 
-  /* iPhone: keep content clear of the notch and the home indicator when the
-     app runs full-screen from the home screen. */
-  .mobile-bar{
-    padding-top:env(safe-area-inset-top);
-    height:calc(54px + env(safe-area-inset-top));
-  }
-  .main{
-    padding-top:calc(70px + env(safe-area-inset-top));
-    padding-bottom:calc(50px + env(safe-area-inset-bottom));
-    padding-left:max(14px, env(safe-area-inset-left));
-    padding-right:max(14px, env(safe-area-inset-right));
-  }
-  .sidebar{ padding-top:calc(18px + env(safe-area-inset-top)); }
-  #toast{ bottom:calc(14px + env(safe-area-inset-bottom)); }
-
-  /* Fixed top bar with the menu toggle */
+  /* Fixed top bar with the menu toggle. On iPhone the status bar sits on top
+     of the page in full-screen mode, so the bar is padded down by the safe
+     area - otherwise the clock covers the menu button. */
   .mobile-bar{
     display:flex; align-items:center; gap:12px;
     position:fixed; top:0; left:0; right:0; z-index:900;
-    height:54px; padding:0 14px;
+    box-sizing:content-box;
+    height:54px;
+    padding:env(safe-area-inset-top) max(14px, env(safe-area-inset-right)) 0 max(14px, env(safe-area-inset-left));
     background:var(--panel);
     border-bottom:1px solid var(--border);
   }
@@ -626,18 +637,30 @@ select:focus{outline:none; border-color:var(--accent);}
     background:var(--panel-alt); border:1px solid var(--border);
     color:var(--text); font-size:18px; line-height:1;
     width:38px; height:38px; border-radius:9px; cursor:pointer;
+    flex-shrink:0;
   }
   .mobile-title{
     font-family:var(--display); font-size:13px; font-weight:700;
     letter-spacing:.06em; text-transform:uppercase; color:var(--accent);
   }
 
+  /* Content sits below the bar, clear of the notch and the home indicator. */
+  .main{
+    padding-top:calc(70px + env(safe-area-inset-top));
+    padding-bottom:calc(50px + env(safe-area-inset-bottom));
+    padding-left:max(14px, env(safe-area-inset-left));
+    padding-right:max(14px, env(safe-area-inset-right));
+  }
+  #toast{ bottom:calc(14px + env(safe-area-inset-bottom)); }
+
   /* Sidebar becomes a slide-out drawer */
   .sidebar{
     position:fixed; top:0; left:0; bottom:0; z-index:1000;
     width:270px; max-width:84vw;
     transform:translateX(-100%); transition:transform .22s ease;
-    overflow-y:auto; padding-top:18px;
+    overflow-y:auto;
+    padding-top:calc(18px + env(safe-area-inset-top));
+    padding-bottom:calc(18px + env(safe-area-inset-bottom));
   }
   .sidebar.open{ transform:translateX(0); }
 
@@ -758,6 +781,12 @@ select:focus{outline:none; border-color:var(--accent);}
   <div class="main" id="main"></div>
 </div>
 <div id="toast"></div>
+
+<div id="installHint" class="install-hint">
+  <button class="install-hint-close" id="installHintClose" aria-label="Закрыть">&times;</button>
+  <div class="install-hint-title">Установить как приложение</div>
+  <div class="install-hint-body" id="installHintBody"></div>
+</div>
 
 <div id="confirmOverlay" class="confirm-overlay">
   <div class="confirm-box">
@@ -3743,9 +3772,47 @@ if('serviceWorker' in navigator){
   });
 }
 
+// ---- Install hint (iOS only) ----------------------------------------------
+// Apple allows "Add to Home Screen" from Safari alone, so users arriving in
+// Chrome/Yandex need to be told to switch browsers - there is no API to do it
+// for them. The hint is dismissible and remembered.
+const INSTALL_HINT_KEY = "install_hint_dismissed";
+
+function setupInstallHint(){
+  const box = document.getElementById("installHint");
+  const body = document.getElementById("installHintBody");
+  if(!box || !body) return;
+
+  const ua = navigator.userAgent;
+  const isIOS = /iPhone|iPad|iPod/.test(ua);
+  if(!isIOS) return;
+
+  // Already running from the home screen - nothing to suggest.
+  if(window.navigator.standalone === true) return;
+
+  try{ if(localStorage.getItem(INSTALL_HINT_KEY) === "1") return; }catch(e){}
+
+  // Every iOS browser reports "Safari" in its UA, so real Safari is identified
+  // by the ABSENCE of the other browsers' markers.
+  const otherBrowser = /CriOS|FxiOS|YaBrowser|EdgiOS|OPiOS|DuckDuckGo/i.test(ua);
+
+  body.innerHTML = otherBrowser
+    ? `Откройте этот сайт в <b>Safari</b> — в других браузерах iPhone не даёт установить приложение.<br><br>
+       Затем: кнопка <b>Поделиться</b> ⬆️ → <b>«На экран «Домой»»</b>.`
+    : `Нажмите <b>Поделиться</b> ⬆️ внизу экрана, затем выберите <b>«На экран «Домой»»</b>.`;
+
+  box.classList.add("show");
+
+  document.getElementById("installHintClose").onclick = () => {
+    box.classList.remove("show");
+    try{ localStorage.setItem(INSTALL_HINT_KEY, "1"); }catch(e){}
+  };
+}
+
 (async function init(){
   setupTheme();
   setupMobileNav();
+  setupInstallHint();
   document.getElementById("userNameInput").oninput = (e) => { currentUserName = e.target.value.trim(); };
 
   document.getElementById("loginBtn").onclick = doLogin;
