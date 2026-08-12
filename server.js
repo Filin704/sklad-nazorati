@@ -4,6 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { MongoClient } = require('mongodb');
 const ingest = require('./ingest');
+const icons = require('./icons');
 
 const app = express();
 app.use(express.json({ limit: '15mb' }));
@@ -601,6 +602,77 @@ app.post('/api/notify', async (req, res) => {
   } catch (e) {
     res.json({ sent: false, reason: e.message });
   }
+});
+
+// --- PWA (installable app) -------------------------------------------------
+// Served from code rather than files, so no binary assets need to live in the
+// repository. These routes are public: iOS fetches them before any login.
+
+app.get('/manifest.webmanifest', (req, res) => {
+  res.type('application/manifest+json').json({
+    name: 'Склад запчастей',
+    short_name: 'Склад',
+    description: 'Контроль остатков и гарантийных заявок',
+    start_url: '/',
+    scope: '/',
+    display: 'standalone',
+    orientation: 'portrait',
+    background_color: '#0D0F12',
+    theme_color: '#0D0F12',
+    icons: [
+      { src: '/icons/192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+      { src: '/icons/512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+      { src: '/icons/512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
+    ]
+  });
+});
+
+app.get('/icons/:size.png', (req, res) => {
+  const data = icons[req.params.size];
+  if (!data) return res.status(404).end();
+  res.type('image/png')
+     .set('Cache-Control', 'public, max-age=604800')
+     .send(Buffer.from(data, 'base64'));
+});
+
+// A service worker is required for iOS to treat the site as installable.
+// It deliberately does NOT cache API responses - stock data must always be
+// fetched live, or the app would show yesterday's numbers.
+app.get('/sw.js', (req, res) => {
+  res.type('application/javascript').send(`
+const CACHE = 'sklad-shell-v1';
+
+self.addEventListener('install', (e) => {
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', (e) => {
+  e.waitUntil(
+    caches.keys().then(keys =>
+      Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
+    ).then(() => self.clients.claim())
+  );
+});
+
+self.addEventListener('fetch', (e) => {
+  const url = new URL(e.request.url);
+
+  // Never serve API or auth responses from cache.
+  if (url.pathname.startsWith('/api/')) return;
+  if (e.request.method !== 'GET') return;
+
+  // Network first, falling back to cache when offline.
+  e.respondWith(
+    fetch(e.request)
+      .then(resp => {
+        const copy = resp.clone();
+        caches.open(CACHE).then(c => c.put(e.request, copy)).catch(() => {});
+        return resp;
+      })
+      .catch(() => caches.match(e.request))
+  );
+});
+  `);
 });
 
 // --- Static frontend ------------------------------------------------------
