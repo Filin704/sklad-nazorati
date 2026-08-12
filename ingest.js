@@ -8,6 +8,7 @@ const GLOBAL_STOCK_KEY = 'stock__GLOBAL_MIXED';
 const HISTORY_KEY = 'stock_history';
 const WARRANTY_KEY = 'warranty_records';
 const BRANDS_KEY = 'brands_list';
+const ALERT_KEY = 'pending_alert';
 const HISTORY_MAX_DAYS = 120;
 
 function normKey(s) {
@@ -278,6 +279,28 @@ async function applyStockUpdate(store, items, uploadedBy) {
       shortagesByBrand[b] = list;
       totalShort += list.length;
     }
+  }
+
+  // The list of items that just dropped is kept on the server until someone
+  // acknowledges it. Otherwise an automatic upload at night would be reported
+  // to nobody, since no browser is open at that moment.
+  if (newlyLow.length > 0) {
+    let existing = [];
+    const rawAlert = await kvGet(ALERT_KEY);
+    if (rawAlert !== undefined) {
+      try { existing = JSON.parse(rawAlert).items || []; } catch (e) { existing = []; }
+    }
+
+    // Merge with anything not yet acknowledged, keeping one entry per artikul.
+    const byArt = {};
+    existing.forEach(x => { byArt[x.brand + '|' + x.artikul] = x; });
+    newlyLow.forEach(x => { byArt[x.brand + '|' + x.artikul] = x; });
+
+    await kvSet(ALERT_KEY, JSON.stringify({
+      at: Date.now(),
+      uploadedBy: uploadedBy || 'auto',
+      items: Object.values(byArt)
+    }));
   }
 
   return { itemCount: items.length, newlyLow, shortagesByBrand, totalShort };
