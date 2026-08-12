@@ -484,6 +484,38 @@ app.get('/api/backups/:id/download', requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// --- Live update signal ----------------------------------------------------
+// Open browsers poll this to notice an automatic upload. It returns just a
+// timestamp, so the check is cheap enough to run every few seconds.
+
+app.get('/api/stock-version', requireAuth, async (req, res) => {
+  try {
+    const raw = await kvGet('stock__GLOBAL_MIXED');
+    if (raw === undefined) return res.json({ updatedAt: 0 });
+    const stock = JSON.parse(raw);
+    res.json({ updatedAt: stock.updatedAt || 0, uploadedBy: stock.uploadedBy || '' });
+  } catch (e) { res.json({ updatedAt: 0 }); }
+});
+
+// --- Pending alert ---------------------------------------------------------
+// The "just dropped below minimum" list, kept until a person acknowledges it.
+
+app.get('/api/alert', requireAuth, async (req, res) => {
+  try {
+    const raw = await kvGet('pending_alert');
+    if (raw === undefined) return res.json({ items: [] });
+    res.json(JSON.parse(raw));
+  } catch (e) { res.json({ items: [] }); }
+});
+
+app.delete('/api/alert', requireAuth, async (req, res) => {
+  try {
+    await kvSet('pending_alert', JSON.stringify({ at: Date.now(), items: [] }));
+    res.json({ ok: true });
+    writeAudit(req.session, 'Уведомление подтверждено', '');
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // --- Automatic ingest ------------------------------------------------------
 // A small watcher on the office PC posts the exported file here whenever it
 // appears in a folder, so the daily base updates without anyone opening the site.
