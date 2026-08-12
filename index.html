@@ -485,7 +485,12 @@ select:focus{outline:none; border-color:var(--accent);}
   border-color:var(--danger-border);
   border-left:3px solid var(--danger);
 }
-.newly-low-panel h3{ color:var(--danger); }
+.newly-low-panel h3{ color:var(--danger); margin:0; }
+.alert-head{
+  display:flex; align-items:flex-start; justify-content:space-between;
+  gap:16px; flex-wrap:wrap;
+}
+.alert-head .btn{ flex-shrink:0; }
 .audit-important{
   color:var(--danger); font-weight:700;
   font-family:var(--display); font-size:12px;
@@ -810,6 +815,7 @@ const BRANDS_KEY = "brands_list";
 const GLOBAL_STOCK_KEY = "stock__GLOBAL_MIXED";
 const IGNORED_KEY = "ignored_artikuls";
 const HISTORY_KEY = "stock_history";
+const PENDING_ALERT_KEY = "pending_alert";
 const WARRANTY_KEY = "warranty_records";
 const MODELS_KEY = "car_models";
 
@@ -2132,6 +2138,7 @@ async function renderHome(){
   });
 
   if(stock) await renderHomeResults(stock);
+  renderPendingAlert();
 }
 
 async function searchArtikul(query){
@@ -2653,11 +2660,32 @@ async function processColumns(aIdx, qIdx, nIdx, sIdx){
   if(ua) ua.textContent = "Последняя загрузка: " + new Date(stockData.updatedAt).toLocaleString("ru-RU") + (stockData.uploadedBy ? " · " + esc(stockData.uploadedBy) : "");
 
   if(newlyLow.length > 0){
-    showNewlyLowBanner(newlyLow);
+    await savePendingAlert(newlyLow);
+    await renderPendingAlert();
     showToast("Внимание: " + newlyLow.length + " новых позиций опустились до минимума.", "warning");
   }
 
   sendTelegramSummary(newlyLow);
+}
+
+// Alerts live on the server so an automatic night-time upload is still seen the
+// next morning, and so acknowledging it on one computer clears it for everyone.
+async function savePendingAlert(list){
+  try{
+    const res = await fetch('/api/alert');
+    let existing = [];
+    if(res.ok){ const d = await res.json(); existing = d.items || []; }
+
+    const byArt = {};
+    existing.forEach(x => { byArt[x.brand + "|" + x.artikul] = x; });
+    list.forEach(x => { byArt[x.brand + "|" + x.artikul] = x; });
+
+    await storage.set(PENDING_ALERT_KEY, JSON.stringify({
+      at: Date.now(),
+      uploadedBy: currentUserName || "",
+      items: Object.values(byArt)
+    }));
+  }catch(e){ /* the on-screen banner still shows it */ }
 }
 
 // Compares the previous upload with the new one and returns the tracked items
@@ -2694,17 +2722,37 @@ function findNewlyLowItems(previousStock, newStock){
   return result;
 }
 
-// Shows the newly-dropped items right on the page, so the change isn't missed
-// even if Telegram isn't set up.
-function showNewlyLowBanner(list){
+// Shows the outstanding "just dropped below minimum" list. It stays on screen
+// across reloads until someone confirms it, so an unattended automatic upload
+// is never missed.
+async function renderPendingAlert(){
   const container = document.getElementById("homeResults");
   if(!container) return;
+
+  document.querySelectorAll(".newly-low-panel").forEach(el => el.remove());
+
+  let data = null;
+  try{
+    const res = await fetch('/api/alert');
+    if(!res.ok) return;
+    data = await res.json();
+  }catch(e){ return; }
+
+  const list = (data && data.items) || [];
+  if(list.length === 0) return;
+
+  const when = data.at ? new Date(data.at).toLocaleString("ru-RU") : "";
   const box = document.createElement("div");
   box.className = "panel newly-low-panel";
   box.innerHTML = `
-    <h3>🆕 Опустились до минимума при этой загрузке (${list.length})</h3>
-    <p class="hint">Эти позиции были в норме на прошлой загрузке, а теперь достигли минимума.</p>
-    <div style="max-height:300px; overflow-y:auto;">
+    <div class="alert-head">
+      <div>
+        <h3>🆕 Опустились до минимума (${list.length})</h3>
+        <p class="hint" style="margin:4px 0 0 0;">Эти позиции были в норме, а теперь достигли минимума.${when ? " Обновление: " + esc(when) : ""}</p>
+      </div>
+      <button class="btn" id="ackAlertBtn">Подтвердить</button>
+    </div>
+    <div style="max-height:300px; overflow-y:auto; margin-top:14px;">
     <table>
       <thead><tr><th>Бренд</th><th>Артикул</th><th>Наименование</th><th>Было</th><th>Стало</th><th>Минимум</th></tr></thead>
       <tbody>
@@ -2723,6 +2771,14 @@ function showNewlyLowBanner(list){
     </div>
   `;
   container.prepend(box);
+
+  document.getElementById("ackAlertBtn").onclick = async () => {
+    try{
+      await fetch('/api/alert', { method: 'DELETE' });
+      box.remove();
+      showToast("Уведомление подтверждено.", "success");
+    }catch(e){ showToast("Не удалось подтвердить: " + e.message, "error"); }
+  };
 }
 
 async function renderHomeResults(stock){
@@ -3621,6 +3677,39 @@ async function startApp(login){
   await checkStorageAvailability();
   await loadBrands();
   await renderAll();
+
+  if(cachedStock) lastKnownStockTime = cachedStock.updatedAt || 0;
+  startAutoRefresh();
+}
+
+// Watches for uploads made elsewhere (the folder watcher, or a colleague) and
+// refreshes the page by itself, so the screen is never silently out of date.
+let lastKnownStockTime = 0;
+let autoRefreshTimer = null;
+
+function startAutoRefresh(){
+  if(autoRefreshTimer) clearInterval(autoRefreshTimer);
+  autoRefreshTimer = setInterval(async () => {
+    // Skip while the tab is in the background — nothing to update visually,
+    // and it avoids pointless requests.
+    if(document.hidden) return;
+
+    try{
+      const res = await fetch('/api/stock-version');
+      if(!res.ok) return;
+      const data = await res.json();
+      const t = data.updatedAt || 0;
+      if(!t) return;
+
+      if(lastKnownStockTime === 0){ lastKnownStockTime = t; return; }
+      if(t <= lastKnownStockTime) return;
+
+      lastKnownStockTime = t;
+      showToast("База склада обновлена" + (data.uploadedBy ? " (" + data.uploadedBy + ")" : "") + " — обновляем...", "info");
+      await renderAll();
+      renderPendingAlert();
+    }catch(e){ /* offline or server asleep: try again next tick */ }
+  }, 20000);
 }
 
 (async function init(){
