@@ -392,6 +392,11 @@ select:focus{outline:none; border-color:var(--accent);}
 .model-row select{ flex:1; }
 .model-row .btn{ padding:8px 12px; font-size:14px; line-height:1; }
 .warranty-card{ border-left-color:var(--accent); }
+.warranty-arrived-row{
+  display:flex; align-items:center; gap:10px;
+  flex-wrap:wrap; margin-top:8px;
+}
+.warranty-arrived-row .w-arrived{ margin:0; }
 .warranty-badge{
   display:inline-block; margin-top:7px;
   background:var(--accent-soft); color:var(--accent);
@@ -1173,11 +1178,11 @@ function countBrandShortages(brand, stockMap){
   });
 
   // Warranty claims are a real outstanding need too. Ones marked with the red
-  // flag (ordered abroad) or already issued are no longer pending, so they drop
-  // out of the badge.
+  // flag (ordered abroad), already issued, or whose arrival has been confirmed
+  // here are no longer pending, so they drop out of the badge.
   cachedWarranty.forEach(r => {
     if(r.brand !== brand) return;
-    if(r.issued || r.flag1 || r.flag3) return;
+    if(r.issued || r.flag1 || r.flag3 || r.stockSeen) return;
     count++;
   });
 
@@ -3202,19 +3207,23 @@ async function renderBrandStatus(brand, stock){
   // Warranty claims are a real demand for the part regardless of the shelf count,
   // so they're merged into the same shortage list — carrying only the artikul and
   // name, and clearly labelled as warranty so they aren't confused with stock lows.
+  // `stockSeen` marks a claim as handled HERE only: the warranty page keeps its
+  // own separate lifecycle (ordered / issued), which this must not disturb.
   const brandWarranty = cachedWarranty
-    .filter(r => r.brand === brand)
+    .filter(r => r.brand === brand && !r.stockSeen)
     .sort((a,b) => (b.date||"").localeCompare(a.date||""));
 
   const warrantyCards = brandWarranty.map(r => {
     const si = stockMap[normKey(r.artikul)];
+    const qty = si ? si.qty : 0;
     return {
       isWarranty: true,
       wid: r.id,
       artikul: r.artikul,
       name: r.name || "",
-      currentQty: si ? si.qty : 0,
+      currentQty: qty,
       minQty: 0,
+      arrived: qty > 0,
       flag1: !!r.flag1, flag2: !!r.flag2, flag3: !!r.flag3
     };
   });
@@ -3236,7 +3245,13 @@ async function renderBrandStatus(brand, stock){
 
             let bodyExtra;
             if(isW){
-              bodyExtra = `<div class="warranty-badge">ГАРАНТИЯ</div>`;
+              bodyExtra = `<div class="warranty-badge">ГАРАНТИЯ</div>` +
+                (s.arrived
+                  ? `<div class="warranty-arrived-row">
+                       <span class="w-arrived">Товар поступил</span>
+                       <button class="btn small wcard-ack-btn" data-wid="${esc(s.wid)}">Подтвердить</button>
+                     </div>`
+                  : "");
             } else {
               const rec = recommendOrder(normKey(s.artikul), s.currentQty, s.minQty);
               bodyExtra = `
@@ -3368,6 +3383,27 @@ async function renderBrandStatus(brand, stock){
       const card = document.getElementById("watchCard-" + cb.dataset.idx);
       if(card) card.classList.toggle("watch-tint-2", cb.checked);
       updateCardFlag(cb, "flag2");
+    };
+  });
+
+  // Acknowledging arrival removes the claim from THIS shortage list only.
+  // The warranty page keeps it until the part is actually handed to the client.
+  document.querySelectorAll(".wcard-ack-btn").forEach(btn => {
+    btn.onclick = () => {
+      const rec = cachedWarranty.find(r => r.id === btn.dataset.wid);
+      if(!rec) return;
+
+      confirmDialog(
+        "Товар поступил?",
+        `«${esc(rec.name || rec.artikul)}»<br>VIN: ${esc(rec.vin || "—")}<br><br>` +
+        `Заявка исчезнет из этого списка, но останется в разделе «Гарантия» до выдачи клиенту.`,
+        async () => {
+          rec.stockSeen = true;
+          await saveWarranty(cachedWarranty);
+          showToast("Отмечено. Заявка осталась в разделе «Гарантия».", "success");
+          renderFromCache();
+        }
+      );
     };
   });
 
