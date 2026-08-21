@@ -1557,6 +1557,7 @@ async function renderWarranty(){
           <div class="w-edit-actions">
             <button class="btn small w-save-btn">Сохранить</button>
             <button class="btn secondary small w-cancel-btn">Отмена</button>
+            ${rec.issued ? "" : `<button class="btn small w-edit-issue-btn">Товар выдан</button>`}
             <button class="btn danger-outline w-del-btn">Удалить</button>
           </div>
         </td>
@@ -1590,6 +1591,36 @@ async function renderWarranty(){
         await saveWarranty(cachedWarranty);
         showToast("Заявка обновлена.", "success");
         renderFromCache();
+      };
+
+      const issueBtn = tr.querySelector(".w-edit-issue-btn");
+      if(issueBtn) issueBtn.onclick = () => {
+        confirmDialog(
+          "Товар выдан клиенту?",
+          `«${esc(rec.name || rec.artikul || "деталь")}»<br>VIN: ${esc(rec.vin || "—")}<br><br>` +
+          `Заявка переместится в раздел «Товар выдан».`,
+          async () => {
+            // Any edits made in the open row are kept, so switching to "issued"
+            // doesn't silently discard what was just typed.
+            const vin = tr.querySelector(".w-e-vin").value.trim().toUpperCase();
+            const name = tr.querySelector(".w-e-name").value.trim();
+            if(vin) rec.vin = vin;
+            if(name) rec.name = name;
+            rec.date    = tr.querySelector(".w-e-date").value || rec.date;
+            rec.phone   = tr.querySelector(".w-e-phone").value.trim();
+            rec.brand   = tr.querySelector(".w-e-brand").value;
+            rec.model   = tr.querySelector(".w-e-model").value;
+            rec.artikul = tr.querySelector(".w-e-artikul").value.trim();
+
+            rec.issued = true;
+            rec.issuedAt = todayKey();
+            rec.issuedBy = currentUserName || "";
+
+            await saveWarranty(cachedWarranty);
+            showToast("Заявка перемещена в «Товар выдан».", "success");
+            renderFromCache();
+          }
+        );
       };
 
       tr.querySelector(".w-del-btn").onclick = async () => {
