@@ -2334,13 +2334,17 @@ async function searchArtikul(query){
     html += `
       <div style="max-height:320px; overflow-y:auto; margin-top:12px;">
       <table>
-        <thead><tr><th>Бренд</th><th>Артикул</th><th>Наименование</th><th style="width:100px;">Минимум</th><th style="width:110px;">Заказать</th><th>Тек. кол-во</th><th style="width:170px;"></th></tr></thead>
+        <thead><tr><th style="width:150px;">Бренд</th><th>Артикул</th><th>Наименование</th><th style="width:100px;">Минимум</th><th style="width:110px;">Заказать</th><th>Тек. кол-во</th><th style="width:170px;"></th></tr></thead>
         <tbody>
           ${matches.map((m,idx) => {
             const stockM = stock ? stock.items.find(it => normKey(it.artikul) === normKey(m.artikul)) : null;
             return `
             <tr data-idx="${idx}">
-              <td>${esc(m.brand)}</td>
+              <td>
+                <select class="edit-brand">
+                  ${brands.map(b => `<option value="${esc(b)}"${b === m.brand ? " selected" : ""}>${esc(b)}</option>`).join("")}
+                </select>
+              </td>
               <td class="mono">${esc(m.artikul)}</td>
               <td><input type="text" class="edit-name" value="${esc(m.name || '')}"></td>
               <td><input type="number" class="edit-min" min="0" value="${m.minQty}"></td>
@@ -2379,17 +2383,36 @@ async function searchArtikul(query){
       const name = tr.querySelector(".edit-name").value.trim();
       const minQty = parseFloat(tr.querySelector(".edit-min").value) || 0;
       const orderQty = parseFloat(tr.querySelector(".edit-order").value) || 0;
-      const th = await getThresholds(m.brand);
+      const newBrand = tr.querySelector(".edit-brand").value;
+
+      const oldTh = await getThresholds(m.brand);
       // Carry over flags this form doesn't expose, so editing here doesn't reset them.
-      const prev = th[m.artikul] || {};
-      th[m.artikul] = {
+      const prev = oldTh[m.artikul] || {};
+      const entry = {
         name, minQty, orderQty,
         notNeeded: !!prev.notNeeded,
         flag1: !!prev.flag1,
         flag2: !!prev.flag2
       };
-      await saveThresholds(m.brand, th);
-      showToast("Изменения сохранены.", "success");
+
+      if(newBrand === m.brand){
+        oldTh[m.artikul] = entry;
+        await saveThresholds(m.brand, oldTh);
+        showToast("Изменения сохранены.", "success");
+      } else {
+        // Moving to another brand: write to the new one first, then drop it from
+        // the old one, so a failure in between can't lose the entry entirely.
+        const newTh = await getThresholds(newBrand);
+        newTh[m.artikul] = entry;
+        await saveThresholds(newBrand, newTh);
+
+        delete oldTh[m.artikul];
+        await saveThresholds(m.brand, oldTh);
+
+        showToast("Перенесено из «" + m.brand + "» в «" + newBrand + "».", "success");
+      }
+
+      searchArtikul(query);
       renderAll();
     };
     tr.querySelector(".edit-del-btn").onclick = async () => {
