@@ -475,6 +475,16 @@ select:focus{outline:none; border-color:var(--accent);}
 .w-table .w-deliv-range{ font-size:9.5px; margin-top:2px; }
 .w-table .w-deliv-done{ font-size:10.5px; }
 .w-table .w-photo-thumb{ width:36px; height:36px; }
+.w-gone{
+  display:block; margin-top:5px;
+  color:var(--warn); font-weight:700; font-size:10px;
+  font-family:var(--display); line-height:1.3;
+}
+.w-deliv-gone{
+  font-family:var(--display); font-size:10.5px;
+  font-weight:700; color:var(--warn);
+}
+.w-table td.mono{ white-space:nowrap; }
 /* Inputs shown while a row is being edited */
 .w-table tr.w-editing input,
 .w-table tr.w-editing select{ font-size:11px; padding:5px 6px; }
@@ -507,13 +517,13 @@ select:focus{outline:none; border-color:var(--accent);}
 .w-table th:last-child, .w-table td:last-child{ border-right:none; }
 
 /* The warranty table carries a lot of columns, so padding and font size are
-   reduced to keep everything visible without horizontal scrolling. */
-.w-table{ table-layout:fixed; width:100%; font-size:12px; }
-.w-table th{ padding:0 6px 9px 6px; font-size:9.5px; letter-spacing:.04em; }
-.w-table td{ padding:9px 6px; font-size:12px; vertical-align:middle; }
+   reduced to keep everything visible without horizontal scrolling. Column
+   widths stay automatic: forcing them made the name column wrap into a narrow
+   unreadable stack. */
+.w-table{ width:100%; font-size:12px; }
+.w-table th{ padding:0 7px 9px 7px; font-size:9.5px; letter-spacing:.04em; }
+.w-table td{ padding:9px 7px; font-size:12px; vertical-align:middle; }
 .w-table .mono{ font-size:11px; }
-/* Long values wrap instead of stretching their column. */
-.w-table td{ overflow-wrap:anywhere; }
 
 /* Inline editing of a warranty row */
 .w-table tr.w-editing td{ background:var(--panel-alt); vertical-align:middle; }
@@ -1405,12 +1415,32 @@ function deliveryEstimate(rec){
   };
 }
 
+// Stamps claims whose part is currently on the shelf. Runs on every warranty
+// page view and after each upload, so an arrival is captured even when nobody
+// is looking at the screen at that moment - the part may be sold on before the
+// next visit, and without this the claim would look as if it never arrived.
+async function markWarrantyArrivals(stockMap){
+  let changed = false;
+  cachedWarranty.forEach(r => {
+    if(r.wasArrived || r.issued) return;
+    const si = stockMap[normKey(r.artikul)];
+    if(si && Number(si.qty) > 0){
+      r.wasArrived = true;
+      r.arrivedAt = todayKey();
+      changed = true;
+    }
+  });
+  if(changed) await saveWarranty(cachedWarranty);
+  return changed;
+}
+
 async function renderWarranty(){
   const main = document.getElementById("main");
 
   const brandOptions = brands.map(b => `<option value="${esc(b)}">${esc(b)}</option>`).join("");
   const records = [...cachedWarranty].sort((a,b) => (b.date || "").localeCompare(a.date || ""));
   const warrantyStockMap = buildStockMap();
+  await markWarrantyArrivals(warrantyStockMap);
 
   // Issued claims are closed: they leave the brand sections and live in their
   // own "Выдано" tab, so the working list only shows what still needs attention.
@@ -1501,11 +1531,15 @@ async function renderWarranty(){
 
       <div style="max-height:460px; overflow-y:auto;">
       <table class="w-table">
-        <thead><tr><th style="width:74px;">Дата</th><th style="width:124px;">VIN</th><th style="width:106px;">Телефон</th><th style="width:72px;">Бренд</th><th style="width:72px;">Модель</th><th style="width:96px;">Артикул</th><th style="width:54px;">Фото</th><th>Наименование</th><th style="width:124px;">Статус</th><th style="width:106px;">Поставка</th><th style="width:96px;"></th></tr></thead>
+        <thead><tr><th>Дата</th><th>VIN</th><th>Телефон</th><th>Бренд</th><th>Модель</th><th>Артикул</th><th>Фото</th><th style="min-width:210px;">Наименование</th><th>Статус</th><th>Поставка</th><th></th></tr></thead>
         <tbody id="wBody">
           ${records.map(r => {
             const si = warrantyStockMap[normKey(r.artikul)];
-            const arrived = !!si && Number(si.qty) > 0;
+            const inStockNow = !!si && Number(si.qty) > 0;
+            // `wasArrived` is set once the part has been seen in stock, so a
+            // claim isn't reset to "not arrived" after the part is sold on.
+            const arrived = inStockNow || !!r.wasArrived;
+            const goneAgain = !inStockNow && !!r.wasArrived;
 
             // Kia parts are ordered from Korea; everything else goes to China.
             const foreignLabel = (r.brand === "Kia") ? "Заказано в Корею" : "Заказано в Китай";
@@ -1525,8 +1559,10 @@ async function renderWarranty(){
             let deliveryHtml = "<span style='color:var(--text-faint)'>—</span>";
             if(r.issued){
               deliveryHtml = `<span class="w-deliv-done">Выдан</span>`;
-            } else if(arrived){
+            } else if(inStockNow){
               deliveryHtml = `<span class="w-deliv-done">На складе</span>`;
+            } else if(goneAgain){
+              deliveryHtml = `<span class="w-deliv-gone">Был на складе</span>`;
             } else if(est){
               deliveryHtml = `<span class="w-deliv-label">${est.label}</span>` +
                 (est.from
@@ -1534,11 +1570,15 @@ async function renderWarranty(){
                   : "");
             }
 
-            const canIssue = !r.issued && !!statusHtml && arrived;
+            // The "issue" action appears once the part has arrived at any point -
+            // including parts already sold on - so a missed press can be fixed.
+            const canIssue = !r.issued && arrived;
             const actions = r.issued
               ? `<button class="btn secondary small w-return-btn">↩ Вернуть</button>`
               : `<button class="btn secondary small w-edit-btn">Изменить</button>` +
-                (canIssue ? `<button class="btn small w-issue-btn">Товар выдан</button>` : "");
+                (canIssue
+                  ? `<button class="btn small w-issue-btn">${goneAgain ? "Закрыть заявку" : "Товар выдан"}</button>`
+                  : "");
 
             return `
             <tr data-id="${esc(r.id)}" data-wbrand="${esc(r.brand || "__none__")}" data-issued="${r.issued ? "1" : "0"}" data-search="${esc(((r.vin||"")+" "+(r.artikul||"")+" "+(r.model||"")+" "+(r.name||"")+" "+(r.brand||"")+" "+(r.phone||"")).toLowerCase())}">
@@ -1715,9 +1755,17 @@ async function renderWarranty(){
       if(!rec) return;
 
       const label = (rec.name || rec.artikul || "деталь");
+      // If the part already left the shelf, the wording reflects that this is
+      // closing a claim after the fact rather than handing something over now.
+      const si = buildStockMap()[normKey(rec.artikul)];
+      const stillHere = !!si && Number(si.qty) > 0;
+
       confirmDialog(
-        "Товар выдан клиенту?",
-        `«${label}»<br>VIN: ${esc(rec.vin || "—")}<br><br>Заявка переместится в раздел «Товар выдан».`,
+        stillHere ? "Товар выдан клиенту?" : "Закрыть заявку?",
+        `«${label}»<br>VIN: ${esc(rec.vin || "—")}<br><br>` +
+        (stillHere
+          ? "Заявка переместится в раздел «Товар выдан»."
+          : "Деталь поступала на склад и её уже нет в остатках — видимо, она была выдана. Заявка переместится в раздел «Товар выдан»."),
         async () => {
           rec.issued = true;
           rec.issuedAt = todayKey();
@@ -3025,6 +3073,12 @@ async function processColumns(aIdx, qIdx, nIdx, sIdx){
   cachedStock = stockData;
   cachedHistory = await recordHistorySnapshot(items);
   await syncNamesFromBase(items);
+
+  // Catch arrivals right when the base lands, not only when someone opens the
+  // warranty page.
+  const uploadStockMap = {};
+  items.forEach(it => { uploadStockMap[normKey(it.artikul)] = it; });
+  await markWarrantyArrivals(uploadStockMap);
   parsedRows = null; parsedHeaders = null;
 
   const newlyLow = findNewlyLowItems(previousStock, stockData);
