@@ -461,6 +461,25 @@ select:focus{outline:none; border-color:var(--accent);}
   font-weight:700; color:var(--success);
 }
 
+/* Compact variants of the in-cell elements, so the warranty table stays
+   readable at its reduced column widths. */
+.w-table .w-status{
+  font-size:9.5px; padding:3px 7px; white-space:normal;
+  line-height:1.3; display:inline-block;
+}
+.w-table .w-row-actions{ gap:4px; }
+.w-table .w-row-actions .btn{ padding:5px 9px; font-size:10.5px; }
+.w-table .w-arrived{ font-size:10px; margin-top:4px; }
+.w-table .w-issued-tag{ font-size:9.5px; }
+.w-table .w-deliv-label{ font-size:10px; line-height:1.3; }
+.w-table .w-deliv-range{ font-size:9.5px; margin-top:2px; }
+.w-table .w-deliv-done{ font-size:10.5px; }
+.w-table .w-photo-thumb{ width:36px; height:36px; }
+/* Inputs shown while a row is being edited */
+.w-table tr.w-editing input,
+.w-table tr.w-editing select{ font-size:11px; padding:5px 6px; }
+.w-table tr.w-editing .btn{ padding:5px 9px; font-size:10.5px; }
+
 /* ---- Warranty brand tabs ---- */
 .w-tabs{
   display:flex; flex-wrap:wrap; gap:6px;
@@ -486,7 +505,15 @@ select:focus{outline:none; border-color:var(--accent);}
 /* Vertical separators so the warranty columns don't visually run together. */
 .w-table th, .w-table td{ border-right:1px solid var(--border); }
 .w-table th:last-child, .w-table td:last-child{ border-right:none; }
-.w-table td{ padding-top:13px; padding-bottom:13px; }
+
+/* The warranty table carries a lot of columns, so padding and font size are
+   reduced to keep everything visible without horizontal scrolling. */
+.w-table{ table-layout:fixed; width:100%; font-size:12px; }
+.w-table th{ padding:0 6px 9px 6px; font-size:9.5px; letter-spacing:.04em; }
+.w-table td{ padding:9px 6px; font-size:12px; vertical-align:middle; }
+.w-table .mono{ font-size:11px; }
+/* Long values wrap instead of stretching their column. */
+.w-table td{ overflow-wrap:anywhere; }
 
 /* Inline editing of a warranty row */
 .w-table tr.w-editing td{ background:var(--panel-alt); vertical-align:middle; }
@@ -749,7 +776,7 @@ select:focus{outline:none; border-color:var(--accent);}
   /* Wide tables scroll sideways instead of squashing */
   .panel > div[style*="overflow-y"]{ overflow-x:auto; -webkit-overflow-scrolling:touch; }
   table{ min-width:620px; }
-  .w-table{ min-width:900px; }
+  .w-table{ min-width:1000px; table-layout:auto; }
   th{ font-size:9.5px; }
   td{ font-size:12px; padding:9px 8px; }
 
@@ -1474,7 +1501,7 @@ async function renderWarranty(){
 
       <div style="max-height:460px; overflow-y:auto;">
       <table class="w-table">
-        <thead><tr><th>Дата</th><th>VIN</th><th>Телефон</th><th>Бренд</th><th>Модель</th><th>Артикул</th><th>Фото</th><th>Наименование</th><th style="width:190px;">Статус</th><th style="width:170px;">Срок поставки</th><th style="width:110px;"></th></tr></thead>
+        <thead><tr><th style="width:74px;">Дата</th><th style="width:124px;">VIN</th><th style="width:106px;">Телефон</th><th style="width:72px;">Бренд</th><th style="width:72px;">Модель</th><th style="width:96px;">Артикул</th><th style="width:54px;">Фото</th><th>Наименование</th><th style="width:124px;">Статус</th><th style="width:106px;">Поставка</th><th style="width:96px;"></th></tr></thead>
         <tbody id="wBody">
           ${records.map(r => {
             const si = warrantyStockMap[normKey(r.artikul)];
