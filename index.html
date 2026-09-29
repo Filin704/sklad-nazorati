@@ -417,6 +417,50 @@ select:focus{outline:none; border-color:var(--accent);}
   font-weight:700; padding:4px 10px; border-radius:20px; white-space:nowrap;
 }
 
+/* ---- Warranty photos ---- */
+.photo-pick{ display:flex; align-items:center; gap:8px; }
+.photo-preview{ position:relative; display:inline-block; }
+.photo-preview img{
+  width:46px; height:46px; object-fit:cover;
+  border-radius:var(--radius-sm); border:1px solid var(--border);
+}
+.photo-clear{
+  position:absolute; top:-6px; right:-6px;
+  width:18px; height:18px; line-height:1; padding:0;
+  background:var(--danger); color:#fff; border:none;
+  border-radius:50%; cursor:pointer; font-size:13px;
+}
+.w-photo-thumb{
+  width:42px; height:42px; object-fit:cover; cursor:pointer;
+  border-radius:var(--radius-sm); border:1px solid var(--border);
+  transition:transform .12s;
+}
+.w-photo-thumb:hover{ transform:scale(1.06); border-color:var(--accent); }
+.photo-viewer{
+  position:fixed; inset:0; z-index:16000;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(0,0,0,.82); padding:24px; cursor:zoom-out;
+}
+.photo-viewer img{
+  max-width:100%; max-height:100%;
+  border-radius:var(--radius); box-shadow:0 20px 60px rgba(0,0,0,.6);
+}
+
+/* ---- Delivery estimate ---- */
+.w-deliv-label{
+  display:block; font-family:var(--display); font-size:11.5px;
+  font-weight:600; color:var(--text-dim);
+}
+.w-deliv-range{
+  display:block; font-family:var(--mono); font-size:10.5px;
+  color:var(--text-faint); margin-top:3px;
+}
+.w-deliv-range.overdue{ color:var(--danger); font-weight:600; }
+.w-deliv-done{
+  font-family:var(--display); font-size:11.5px;
+  font-weight:700; color:var(--success);
+}
+
 /* ---- Warranty brand tabs ---- */
 .w-tabs{
   display:flex; flex-wrap:wrap; gap:6px;
@@ -1242,6 +1286,98 @@ document.getElementById("addBrandSave").onclick = async () => {
 
 /* ---------------- WARRANTY PAGE ---------------- */
 
+// ---- Photos -----------------------------------------------------------------
+
+// Reads an image file, scales it down to fit maxSize and returns a JPEG data URI.
+// Keeping this on the client means the server never has to handle large uploads.
+function shrinkImage(file, maxSize, quality){
+  return new Promise((resolve, reject) => {
+    if(!file.type.startsWith("image/")) return reject(new Error("не изображение"));
+
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("не удалось прочитать файл"));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("повреждённое изображение"));
+      img.onload = () => {
+        let { width, height } = img;
+        const scale = Math.min(1, maxSize / Math.max(width, height));
+        width = Math.round(width * scale);
+        height = Math.round(height * scale);
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        // White backdrop so transparent PNGs don't turn black as JPEG.
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// Opens a photo full size over the page.
+function openPhotoViewer(src){
+  const overlay = document.createElement("div");
+  overlay.className = "photo-viewer";
+  overlay.innerHTML = `<img src="${src}" alt="Фото детали">`;
+  overlay.onclick = () => overlay.remove();
+  document.body.appendChild(overlay);
+}
+
+// ---- Delivery estimates -----------------------------------------------------
+// The expected arrival window depends on where the part is ordered from:
+// locally (days) or from China (months). It is counted from the day the status
+// was set, not from the claim date, since ordering usually happens later.
+
+const DELIVERY_WINDOWS = {
+  flag1: { minDays: 3,  maxDays: 7,   label: "3 дня – 1 неделя" },  // Заказано
+  flag3: { minDays: 60, maxDays: 90,  label: "2 – 3 месяца" }       // Заказано в Китай/Корею
+};
+
+function addDays(isoDate, days){
+  const d = new Date(isoDate + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0,10);
+}
+
+function formatShortDate(iso){
+  if(!iso) return "";
+  const [y,m,d] = iso.split("-");
+  return Number(d) + "." + m + "." + y.slice(2);
+}
+
+// Returns the delivery estimate for a claim, or null when nothing is ordered yet.
+function deliveryEstimate(rec){
+  let key = null;
+  if(rec.flag1) key = "flag1";
+  else if(rec.flag3) key = "flag3";
+  if(!key) return null;
+
+  const w = DELIVERY_WINDOWS[key];
+  // Older records have no stamp; fall back to the claim date so they still
+  // show something sensible instead of nothing.
+  const from = rec.statusAt || rec.date;
+  if(!from) return { label: w.label, from: null, to: null, overdue: false };
+
+  const fromDate = addDays(from, w.minDays);
+  const toDate   = addDays(from, w.maxDays);
+  const today    = todayKey();
+
+  return {
+    label: w.label,
+    from: fromDate,
+    to: toDate,
+    overdue: today > toDate && !rec.issued
+  };
+}
+
 async function renderWarranty(){
   const main = document.getElementById("main");
 
@@ -1304,6 +1440,14 @@ async function renderWarranty(){
           <label>Наименование (не обязательно)</label>
           <input type="text" id="wName" placeholder="наименование">
         </div>
+        <div>
+          <label>Фото детали</label>
+          <div class="photo-pick">
+            <input type="file" id="wPhoto" accept="image/*" style="display:none;">
+            <button class="btn secondary small" id="wPhotoBtn">📷 Выбрать</button>
+            <div id="wPhotoPreview" class="photo-preview"></div>
+          </div>
+        </div>
         <button class="btn" id="wSaveBtn">Сохранить заявку</button>
       </div>
 
@@ -1330,7 +1474,7 @@ async function renderWarranty(){
 
       <div style="max-height:460px; overflow-y:auto;">
       <table class="w-table">
-        <thead><tr><th>Дата</th><th>VIN</th><th>Телефон</th><th>Бренд</th><th>Модель</th><th>Артикул</th><th>Наименование</th><th style="width:190px;">Статус</th><th style="width:110px;"></th></tr></thead>
+        <thead><tr><th>Дата</th><th>VIN</th><th>Телефон</th><th>Бренд</th><th>Модель</th><th>Артикул</th><th>Фото</th><th>Наименование</th><th style="width:190px;">Статус</th><th style="width:170px;">Срок поставки</th><th style="width:110px;"></th></tr></thead>
         <tbody id="wBody">
           ${records.map(r => {
             const si = warrantyStockMap[normKey(r.artikul)];
@@ -1349,6 +1493,20 @@ async function renderWarranty(){
 
             // The "issue" action only makes sense once the part is actually here,
             // so the button appears only after the arrival notice shows up.
+            // Expected arrival window, shown as a date range once ordered.
+            const est = deliveryEstimate(r);
+            let deliveryHtml = "<span style='color:var(--text-faint)'>—</span>";
+            if(r.issued){
+              deliveryHtml = `<span class="w-deliv-done">Выдан</span>`;
+            } else if(arrived){
+              deliveryHtml = `<span class="w-deliv-done">На складе</span>`;
+            } else if(est){
+              deliveryHtml = `<span class="w-deliv-label">${est.label}</span>` +
+                (est.from
+                  ? `<span class="w-deliv-range${est.overdue ? " overdue" : ""}">${formatShortDate(est.from)} – ${formatShortDate(est.to)}${est.overdue ? " · просрочено" : ""}</span>`
+                  : "");
+            }
+
             const canIssue = !r.issued && !!statusHtml && arrived;
             const actions = r.issued
               ? `<button class="btn secondary small w-return-btn">↩ Вернуть</button>`
@@ -1363,17 +1521,49 @@ async function renderWarranty(){
               <td>${esc(r.brand || "") || "<span style='color:var(--text-faint)'>—</span>"}</td>
               <td>${esc(r.model || "") || "<span style='color:var(--text-faint)'>—</span>"}</td>
               <td class="mono">${esc(r.artikul || "") || "<span style='color:var(--text-faint)'>—</span>"}</td>
+              <td>${r.photo
+                    ? `<img src="${r.photo}" class="w-photo-thumb" data-photo="${esc(r.id)}" alt="Фото детали">`
+                    : "<span style='color:var(--text-faint)'>—</span>"}</td>
               <td>${esc(r.name || "") || "<span style='color:var(--text-faint)'>—</span>"}</td>
               <td>${statusHtml}${arrivedTxt}${issuedTxt}</td>
+              <td>${deliveryHtml}</td>
               <td><div class="w-row-actions">${actions}</div></td>
             </tr>`;
           }).join("")}
-          ${records.length === 0 ? `<tr><td colspan="9" class="empty-state">Заявок пока нет.</td></tr>` : ""}
+          ${records.length === 0 ? `<tr><td colspan="11" class="empty-state">Заявок пока нет.</td></tr>` : ""}
         </tbody>
       </table>
       </div>
     </div>
   `;
+
+  // Photos are downscaled in the browser before they are stored. A raw phone
+  // photo is several megabytes, which would quickly fill the database and slow
+  // every page load; ~900px wide JPEG is plenty to identify a part.
+  let pendingPhoto = null;
+
+  const photoBtn = document.getElementById("wPhotoBtn");
+  const photoInput = document.getElementById("wPhoto");
+  const photoPreview = document.getElementById("wPhotoPreview");
+
+  if(photoBtn) photoBtn.onclick = () => photoInput.click();
+  if(photoInput) photoInput.onchange = async (e) => {
+    const file = e.target.files[0];
+    if(!file) return;
+    try{
+      pendingPhoto = await shrinkImage(file, 900, 0.72);
+      photoPreview.innerHTML =
+        `<img src="${pendingPhoto}" alt="Превью">` +
+        `<button class="photo-clear" id="wPhotoClear" title="Убрать">&times;</button>`;
+      document.getElementById("wPhotoClear").onclick = () => {
+        pendingPhoto = null;
+        photoPreview.innerHTML = "";
+        photoInput.value = "";
+      };
+    }catch(err){
+      showToast("Не удалось обработать фото: " + err.message, "error");
+    }
+  };
 
   const brandSel = document.getElementById("wBrand");
   const modelSel = document.getElementById("wModel");
@@ -1438,11 +1628,13 @@ async function renderWarranty(){
       id: "w" + Date.now() + Math.random().toString(36).slice(2,7),
       date: date || todayKey(),
       vin, brand, model, artikul, name, phone,
+      photo: pendingPhoto || null,
       flag1: false, flag2: false, flag3: false,
       createdBy: currentUserName || ""
     };
     cachedWarranty.push(record);
     await saveWarranty(cachedWarranty);
+    pendingPhoto = null;
 
     showToast(brand
       ? "Заявка сохранена. Деталь появится в нехватке бренда «" + brand + "»."
@@ -1527,6 +1719,10 @@ async function renderWarranty(){
 
   // Turns a row into editable inputs in place. Keeps the row's flags and id
   // untouched — only the fields the user can see are editable here.
+  document.querySelectorAll("#wBody .w-photo-thumb").forEach(img => {
+    img.onclick = () => openPhotoViewer(img.src);
+  });
+
   document.querySelectorAll("#wBody .w-edit-btn").forEach(btn => {
     btn.onclick = () => {
       const tr = btn.closest("tr");
@@ -1552,8 +1748,17 @@ async function renderWarranty(){
           <select class="w-e-model"><option value="">—</option>${modelOpts}</select>
         </td>
         <td><input type="text" class="w-e-artikul" value="${esc(rec.artikul || "")}"></td>
+        <td>
+          <div class="photo-pick">
+            <input type="file" class="w-e-photo-input" accept="image/*" style="display:none;">
+            <button class="btn secondary small w-e-photo-btn">📷</button>
+            <div class="photo-preview w-e-photo-preview">
+              ${rec.photo ? `<img src="${rec.photo}" alt="Фото"><button class="photo-clear w-e-photo-clear" title="Убрать">&times;</button>` : ""}
+            </div>
+          </div>
+        </td>
         <td><input type="text" class="w-e-name" value="${esc(rec.name || "")}"></td>
-        <td colspan="2">
+        <td colspan="3">
           <div class="w-edit-actions">
             <button class="btn small w-save-btn">Сохранить</button>
             <button class="btn secondary small w-cancel-btn">Отмена</button>
@@ -1562,6 +1767,36 @@ async function renderWarranty(){
           </div>
         </td>
       `;
+
+      // Photo handling inside the open row. editPhoto starts as whatever the
+      // record already has, so saving without touching it keeps the old photo.
+      let editPhoto = rec.photo || null;
+      const ePhotoInput = tr.querySelector(".w-e-photo-input");
+      const ePhotoPreview = tr.querySelector(".w-e-photo-preview");
+
+      function bindPhotoClear(){
+        const clr = tr.querySelector(".w-e-photo-clear");
+        if(clr) clr.onclick = () => {
+          editPhoto = null;
+          ePhotoPreview.innerHTML = "";
+          ePhotoInput.value = "";
+        };
+      }
+      bindPhotoClear();
+
+      tr.querySelector(".w-e-photo-btn").onclick = () => ePhotoInput.click();
+      ePhotoInput.onchange = async (e) => {
+        const f = e.target.files[0];
+        if(!f) return;
+        try{
+          editPhoto = await shrinkImage(f, 900, 0.72);
+          ePhotoPreview.innerHTML =
+            `<img src="${editPhoto}" alt="Фото"><button class="photo-clear w-e-photo-clear" title="Убрать">&times;</button>`;
+          bindPhotoClear();
+        }catch(err){
+          showToast("Не удалось обработать фото: " + err.message, "error");
+        }
+      };
 
       // Changing the brand refreshes the model list for that brand.
       tr.querySelector(".w-e-brand").onchange = (e) => {
@@ -1587,6 +1822,7 @@ async function renderWarranty(){
         rec.model   = tr.querySelector(".w-e-model").value;
         rec.artikul = tr.querySelector(".w-e-artikul").value.trim();
         rec.name    = name;
+        rec.photo   = editPhoto;
 
         await saveWarranty(cachedWarranty);
         showToast("Заявка обновлена.", "success");
@@ -1611,6 +1847,7 @@ async function renderWarranty(){
             rec.brand   = tr.querySelector(".w-e-brand").value;
             rec.model   = tr.querySelector(".w-e-model").value;
             rec.artikul = tr.querySelector(".w-e-artikul").value.trim();
+            rec.photo   = editPhoto;
 
             rec.issued = true;
             rec.issuedAt = todayKey();
@@ -3402,6 +3639,11 @@ async function renderBrandStatus(brand, stock){
       const rec = cachedWarranty.find(r => r.id === wid);
       if(rec){
         rec[flagName] = cb.checked;
+        // flag1/flag3 mean "ordered", so the delivery window starts counting
+        // from the moment the status is set.
+        if((flagName === "flag1" || flagName === "flag3") && cb.checked){
+          rec.statusAt = todayKey();
+        }
         saveWarranty(cachedWarranty);
       }
       return "warranty";
