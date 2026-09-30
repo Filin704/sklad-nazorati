@@ -1159,6 +1159,8 @@ async function loadCoreData(){
   catch(e){ cachedModels = {}; }
 
   cachedMap = buildArtikulMapFromThresholds(cachedThresholdsByBrand);
+
+  await loadWarrantyStock();
 }
 
 // ---- Consumption analysis -------------------------------------------------
@@ -1270,9 +1272,30 @@ function countBrandShortages(brand, stockMap){
   return count;
 }
 
+// Warranty-only users can't read the stock snapshot, so their quantities come
+// from a restricted endpoint that returns just the artikuls in their claims.
+let cachedWarrantyStock = {};
+
+async function loadWarrantyStock(){
+  if(!isWarrantyOnly()) return;
+  try{
+    const res = await fetch('/api/warranty-stock');
+    if(!res.ok) return;
+    const data = await res.json();
+    cachedWarrantyStock = data.quantities || {};
+  }catch(e){ /* keep whatever we had */ }
+}
+
 function buildStockMap(){
   const stockMap = {};
-  if(cachedStock) cachedStock.items.forEach(it => { stockMap[normKey(it.artikul)] = it; });
+  if(cachedStock){
+    cachedStock.items.forEach(it => { stockMap[normKey(it.artikul)] = it; });
+  } else if(isWarrantyOnly()){
+    // Same shape as a real stock item, so every caller works unchanged.
+    Object.keys(cachedWarrantyStock).forEach(k => {
+      stockMap[k] = { artikul: k, qty: cachedWarrantyStock[k] };
+    });
+  }
   return stockMap;
 }
 
@@ -1935,11 +1958,19 @@ async function renderWarranty(){
         );
       };
 
-      tr.querySelector(".w-del-btn").onclick = async () => {
-        cachedWarranty = cachedWarranty.filter(r => r.id !== id);
-        await saveWarranty(cachedWarranty);
-        showToast("Заявка удалена.", "success");
-        renderFromCache();
+      tr.querySelector(".w-del-btn").onclick = () => {
+        // Deletion can't be undone, so it always goes through a confirmation.
+        confirmDialog(
+          "Удалить заявку?",
+          `«${esc(rec.name || rec.artikul || "деталь")}»<br>VIN: ${esc(rec.vin || "—")}<br><br>` +
+          `Заявка будет удалена безвозвратно.`,
+          async () => {
+            cachedWarranty = cachedWarranty.filter(r => r.id !== id);
+            await saveWarranty(cachedWarranty);
+            showToast("Заявка удалена.", "success");
+            renderFromCache();
+          }
+        );
       };
     };
   });
@@ -2727,13 +2758,20 @@ async function searchArtikul(query){
       searchArtikul(query);
       renderAll();
     };
-    tr.querySelector(".edit-del-btn").onclick = async () => {
-      const th = await getThresholds(m.brand);
-      delete th[m.artikul];
-      await saveThresholds(m.brand, th);
-      showToast("Удалено из бренда «" + m.brand + "».", "success");
-      searchArtikul(query);
-      renderAll();
+    tr.querySelector(".edit-del-btn").onclick = () => {
+      confirmDialog(
+        "Удалить из бренда?",
+        `«${esc(m.name || m.artikul)}»<br>Артикул: ${esc(m.artikul)}<br><br>` +
+        `Позиция перестанет отслеживаться в бренде «${esc(m.brand)}». Минимум и заказ будут потеряны.`,
+        async () => {
+          const th = await getThresholds(m.brand);
+          delete th[m.artikul];
+          await saveThresholds(m.brand, th);
+          showToast("Удалено из бренда «" + m.brand + "».", "success");
+          searchArtikul(query);
+          renderAll();
+        }
+      );
     };
   });
 }
