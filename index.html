@@ -611,6 +611,15 @@ select:focus{outline:none; border-color:var(--accent);}
   color:var(--danger); font-weight:700;
   font-family:var(--display); font-size:12px;
 }
+.w-tab-delreq{ border-color:var(--danger-border); color:var(--danger); }
+.w-tab-delreq.active{ background:var(--danger-dim); border-color:var(--danger-border); color:var(--danger); }
+.w-tab-delreq.active .w-tab-count{ color:var(--danger); border-color:var(--danger-border); }
+.w-delreq-tag{
+  display:block; margin-top:5px; color:var(--danger);
+  font-family:var(--display); font-size:9.5px; font-weight:700; line-height:1.3;
+}
+.w-table tr[data-delreq="1"] td{ background:var(--danger-dim); }
+
 .w-tab-issued.active{ background:var(--success-dim); border-color:var(--success-border); color:var(--success); }
 .w-tab-issued.active .w-tab-count{ color:var(--success); border-color:var(--success-border); }
 .w-issued-tag{
@@ -1461,14 +1470,19 @@ async function renderWarranty(){
   const main = document.getElementById("main");
 
   const brandOptions = brands.map(b => `<option value="${esc(b)}">${esc(b)}</option>`).join("");
-  const records = [...cachedWarranty].sort((a,b) => (b.date || "").localeCompare(a.date || ""));
+  // Claims awaiting deletion approval vanish for warranty staff but stay
+  // visible to the admin, who has to review them.
+  const records = [...cachedWarranty]
+    .filter(r => isAdmin() || !r.deleteRequested)
+    .sort((a,b) => (b.date || "").localeCompare(a.date || ""));
   const warrantyStockMap = buildStockMap();
   await markWarrantyArrivals(warrantyStockMap);
 
   // Issued claims are closed: they leave the brand sections and live in their
   // own "Выдано" tab, so the working list only shows what still needs attention.
-  const openRecords = records.filter(r => !r.issued);
-  const issuedRecords = records.filter(r => r.issued);
+  const openRecords = records.filter(r => !r.issued && !r.deleteRequested);
+  const issuedRecords = records.filter(r => r.issued && !r.deleteRequested);
+  const deleteRequests = records.filter(r => r.deleteRequested);
 
   const countByBrand = {};
   let noBrandCount = 0;
@@ -1483,6 +1497,11 @@ async function renderWarranty(){
       <h2>🛡 Гарантия</h2>
       <div class="updated-at">Всего заявок: ${records.length}</div>
     </div>
+
+    ${deleteRequests.length > 0 ? `
+    <div class="warn-banner">
+      🗑 <b>${deleteRequests.length}</b> заявок отправлено на удаление — требуется ваше подтверждение. Откройте вкладку «На удаление».
+    </div>` : ""}
 
     <div class="panel">
       <h3>Новая гарантийная заявка</h3>
@@ -1550,6 +1569,7 @@ async function renderWarranty(){
         `).join("")}
         ${noBrandCount > 0 ? `<div class="w-tab" data-wbrand="__none__">Без бренда <span class="w-tab-count">${noBrandCount}</span></div>` : ""}
         ${issuedRecords.length > 0 ? `<div class="w-tab w-tab-issued" data-wbrand="__issued__">✅ Товар выдан <span class="w-tab-count">${issuedRecords.length}</span></div>` : ""}
+        ${deleteRequests.length > 0 ? `<div class="w-tab w-tab-delreq" data-wbrand="__delreq__">🗑 На удаление <span class="w-tab-count">${deleteRequests.length}</span></div>` : ""}
       </div>
 
       <div style="max-height:460px; overflow-y:auto;">
@@ -1574,6 +1594,9 @@ async function renderWarranty(){
 
             const arrivedTxt = (statusHtml && arrived) ? `<span class="w-arrived">Товар поступил</span>` : "";
             const issuedTxt = r.issued ? `<span class="w-issued-tag">Выдан клиенту</span>` : "";
+            const delReqTxt = r.deleteRequested
+              ? `<span class="w-delreq-tag">На удаление${r.deleteRequestedBy ? " · " + esc(r.deleteRequestedBy) : ""}${r.deleteRequestedAt ? " · " + formatShortDate(r.deleteRequestedAt) : ""}</span>`
+              : "";
 
             // The "issue" action only makes sense once the part is actually here,
             // so the button appears only after the arrival notice shows up.
@@ -1596,15 +1619,22 @@ async function renderWarranty(){
             // The "issue" action appears once the part has arrived at any point -
             // including parts already sold on - so a missed press can be fixed.
             const canIssue = !r.issued && arrived;
-            const actions = r.issued
-              ? `<button class="btn secondary small w-return-btn">↩ Вернуть</button>`
-              : `<button class="btn secondary small w-edit-btn">Изменить</button>` +
+            let actions;
+            if(r.deleteRequested){
+              // Only two sensible moves here: approve the removal or put it back.
+              actions = `<button class="btn danger-outline w-confirm-del-btn">Удалить</button>` +
+                        `<button class="btn secondary small w-restore-btn">↩ Вернуть</button>`;
+            } else if(r.issued){
+              actions = `<button class="btn secondary small w-return-btn">↩ Вернуть</button>`;
+            } else {
+              actions = `<button class="btn secondary small w-edit-btn">Изменить</button>` +
                 (canIssue
                   ? `<button class="btn small w-issue-btn">${goneAgain ? "Закрыть заявку" : "Товар выдан"}</button>`
                   : "");
+            }
 
             return `
-            <tr data-id="${esc(r.id)}" data-wbrand="${esc(r.brand || "__none__")}" data-issued="${r.issued ? "1" : "0"}" data-search="${esc(((r.vin||"")+" "+(r.artikul||"")+" "+(r.model||"")+" "+(r.name||"")+" "+(r.brand||"")+" "+(r.phone||"")).toLowerCase())}">
+            <tr data-id="${esc(r.id)}" data-wbrand="${esc(r.brand || "__none__")}" data-issued="${r.issued ? "1" : "0"}" data-delreq="${r.deleteRequested ? "1" : "0"}" data-search="${esc(((r.vin||"")+" "+(r.artikul||"")+" "+(r.model||"")+" "+(r.name||"")+" "+(r.brand||"")+" "+(r.phone||"")).toLowerCase())}">
               <td class="mono">${esc(r.date || "")}</td>
               <td class="mono">${esc(r.vin || "")}</td>
               <td class="mono">${esc(r.phone || "") || "<span style='color:var(--text-faint)'>—</span>"}</td>
@@ -1615,7 +1645,7 @@ async function renderWarranty(){
                     ? `<img src="${r.photo}" class="w-photo-thumb" data-photo="${esc(r.id)}" alt="Фото детали">`
                     : "<span style='color:var(--text-faint)'>—</span>"}</td>
               <td>${esc(r.name || "") || "<span style='color:var(--text-faint)'>—</span>"}</td>
-              <td>${statusHtml}${arrivedTxt}${issuedTxt}</td>
+              <td>${statusHtml}${arrivedTxt}${issuedTxt}${delReqTxt}</td>
               <td>${deliveryHtml}</td>
               <td><div class="w-row-actions">${actions}</div></td>
             </tr>`;
@@ -1741,12 +1771,17 @@ async function renderWarranty(){
   // and typing keeps the selected brand.
   function applyWarrantyFilters(){
     const showIssued = activeWBrand === "__issued__";
+    const showDelReq = activeWBrand === "__delreq__";
     wRows.forEach(tr => {
       if(tr.dataset.search === undefined) return;
       const isIssued = tr.dataset.issued === "1";
+      const isDelReq = tr.dataset.delreq === "1";
       let brandOk;
-      if(showIssued) brandOk = isIssued;
-      else brandOk = !isIssued && (!activeWBrand || tr.dataset.wbrand === activeWBrand);
+      if(showDelReq)      brandOk = isDelReq;
+      else if(showIssued) brandOk = isIssued && !isDelReq;
+      // Pending-deletion rows stay out of the normal tabs so they don't get
+      // acted on as if nothing were wrong.
+      else brandOk = !isIssued && !isDelReq && (!activeWBrand || tr.dataset.wbrand === activeWBrand);
       const queryOk = !activeWQuery || tr.dataset.search.includes(activeWQuery);
       tr.style.display = (brandOk && queryOk) ? "" : "none";
     });
@@ -1798,6 +1833,42 @@ async function renderWarranty(){
           renderFromCache();
         }
       );
+    };
+  });
+
+  document.querySelectorAll("#wBody .w-confirm-del-btn").forEach(btn => {
+    btn.onclick = () => {
+      const tr = btn.closest("tr");
+      const rec = cachedWarranty.find(r => r.id === tr.dataset.id);
+      if(!rec) return;
+
+      confirmDialog(
+        "Подтвердить удаление?",
+        `«${esc(rec.name || rec.artikul || "деталь")}»<br>VIN: ${esc(rec.vin || "—")}<br>` +
+        `Запросил: ${esc(rec.deleteRequestedBy || "—")}<br><br>` +
+        `Заявка будет удалена безвозвратно.`,
+        async () => {
+          cachedWarranty = cachedWarranty.filter(r => r.id !== tr.dataset.id);
+          await saveWarranty(cachedWarranty);
+          showToast("Заявка удалена.", "success");
+          renderFromCache();
+        }
+      );
+    };
+  });
+
+  document.querySelectorAll("#wBody .w-restore-btn").forEach(btn => {
+    btn.onclick = async () => {
+      const tr = btn.closest("tr");
+      const rec = cachedWarranty.find(r => r.id === tr.dataset.id);
+      if(!rec) return;
+
+      delete rec.deleteRequested;
+      delete rec.deleteRequestedBy;
+      delete rec.deleteRequestedAt;
+      await saveWarranty(cachedWarranty);
+      showToast("Заявка возвращена в работу.", "success");
+      renderFromCache();
     };
   });
 
@@ -1959,15 +2030,35 @@ async function renderWarranty(){
       };
 
       tr.querySelector(".w-del-btn").onclick = () => {
-        // Deletion can't be undone, so it always goes through a confirmation.
+        // Warranty staff can't delete outright: the claim is only flagged and
+        // disappears from their view, while an admin reviews it and decides.
+        // An admin deleting goes straight through - there is nobody above them
+        // to approve it.
+        if(isAdmin()){
+          confirmDialog(
+            "Удалить заявку?",
+            `«${esc(rec.name || rec.artikul || "деталь")}»<br>VIN: ${esc(rec.vin || "—")}<br><br>` +
+            `Заявка будет удалена безвозвратно.`,
+            async () => {
+              cachedWarranty = cachedWarranty.filter(r => r.id !== id);
+              await saveWarranty(cachedWarranty);
+              showToast("Заявка удалена.", "success");
+              renderFromCache();
+            }
+          );
+          return;
+        }
+
         confirmDialog(
-          "Удалить заявку?",
+          "Отправить заявку на удаление?",
           `«${esc(rec.name || rec.artikul || "деталь")}»<br>VIN: ${esc(rec.vin || "—")}<br><br>` +
-          `Заявка будет удалена безвозвратно.`,
+          `Заявка исчезнет из вашего списка. Окончательно удалит её администратор после проверки.`,
           async () => {
-            cachedWarranty = cachedWarranty.filter(r => r.id !== id);
+            rec.deleteRequested = true;
+            rec.deleteRequestedBy = currentUserName || "";
+            rec.deleteRequestedAt = todayKey();
             await saveWarranty(cachedWarranty);
-            showToast("Заявка удалена.", "success");
+            showToast("Отправлено администратору на подтверждение.", "success");
             renderFromCache();
           }
         );
