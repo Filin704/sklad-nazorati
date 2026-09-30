@@ -489,6 +489,44 @@ app.get('/api/backups/:id/download', requireAdmin, async (req, res) => {
 // Open browsers poll this to notice an automatic upload. It returns just a
 // timestamp, so the check is cheap enough to run every few seconds.
 
+// --- Stock lookup for warranty staff ---------------------------------------
+// A warranty-only user must know whether the part they ordered has arrived, but
+// must not see the warehouse as a whole. This returns quantities for the
+// artikuls that appear in the warranty claims and nothing else.
+
+app.get('/api/warranty-stock', requireAuth, async (req, res) => {
+  try {
+    const rawWarranty = await kvGet('warranty_records');
+    if (rawWarranty === undefined) return res.json({ quantities: {} });
+
+    let claims = [];
+    try { claims = JSON.parse(rawWarranty) || []; } catch (e) { claims = []; }
+
+    const wanted = new Set();
+    claims.forEach(r => {
+      const a = String(r.artikul || '').trim().toUpperCase().replace(/\s+/g, '');
+      if (a) wanted.add(a);
+    });
+    if (wanted.size === 0) return res.json({ quantities: {} });
+
+    const rawStock = await kvGet('stock__GLOBAL_MIXED');
+    if (rawStock === undefined) return res.json({ quantities: {} });
+
+    let stock = null;
+    try { stock = JSON.parse(rawStock); } catch (e) { stock = null; }
+    if (!stock || !Array.isArray(stock.items)) return res.json({ quantities: {} });
+
+    // Only the quantity is returned - no prices, no names, no other positions.
+    const quantities = {};
+    stock.items.forEach(it => {
+      const k = String(it.artikul || '').trim().toUpperCase().replace(/\s+/g, '');
+      if (wanted.has(k)) quantities[k] = Number(it.qty) || 0;
+    });
+
+    res.json({ quantities, updatedAt: stock.updatedAt || 0 });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/stock-version', requireAuth, async (req, res) => {
   try {
     const raw = await kvGet('stock__GLOBAL_MIXED');
