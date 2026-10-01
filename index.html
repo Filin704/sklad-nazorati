@@ -484,7 +484,7 @@ select:focus{outline:none; border-color:var(--accent);}
   font-family:var(--display); font-size:10.5px;
   font-weight:700; color:var(--warn);
 }
-.w-table td.mono{ white-space:nowrap; }
+.w-table td.mono{ overflow-wrap:anywhere; }
 /* Inputs shown while a row is being edited */
 .w-table tr.w-editing input,
 .w-table tr.w-editing select{ font-size:11px; padding:5px 6px; }
@@ -520,9 +520,22 @@ select:focus{outline:none; border-color:var(--accent);}
    reduced to keep everything visible without horizontal scrolling. Column
    widths stay automatic: forcing them made the name column wrap into a narrow
    unreadable stack. */
-.w-table{ width:100%; font-size:12px; }
-.w-table th{ padding:0 7px 9px 7px; font-size:9.5px; letter-spacing:.04em; }
-.w-table td{ padding:9px 7px; font-size:12px; vertical-align:middle; }
+.w-table{ width:100%; font-size:12px; table-layout:fixed; }
+/* Part names vary from a few characters to a full sentence. Capping the cell
+   and scrolling inside it keeps every other column - including the action
+   buttons - on screen. */
+.w-name-cell{
+  max-height:52px; overflow-y:auto; overflow-x:hidden;
+  line-height:1.35; padding-right:4px;
+  overflow-wrap:anywhere;
+}
+.w-name-cell::-webkit-scrollbar{ width:5px; }
+.w-name-cell::-webkit-scrollbar-thumb{
+  background:var(--border); border-radius:3px;
+}
+.w-name-cell::-webkit-scrollbar-thumb:hover{ background:var(--text-faint); }
+.w-table th{ padding:0 6px 9px 6px; font-size:9.5px; letter-spacing:.04em; }
+.w-table td{ padding:9px 6px; font-size:12px; vertical-align:middle; }
 .w-table .mono{ font-size:11px; }
 
 /* Inline editing of a warranty row */
@@ -796,6 +809,7 @@ select:focus{outline:none; border-color:var(--accent);}
   .panel > div[style*="overflow-y"]{ overflow-x:auto; -webkit-overflow-scrolling:touch; }
   table{ min-width:620px; }
   .w-table{ min-width:1000px; table-layout:auto; }
+  .w-name-cell{ max-height:none; overflow:visible; }
   th{ font-size:9.5px; }
   td{ font-size:12px; padding:9px 8px; }
 
@@ -1574,7 +1588,7 @@ async function renderWarranty(){
 
       <div style="max-height:460px; overflow-y:auto;">
       <table class="w-table">
-        <thead><tr><th>Дата</th><th>VIN</th><th>Телефон</th><th>Бренд</th><th>Модель</th><th>Артикул</th><th>Фото</th><th style="min-width:210px;">Наименование</th><th>Статус</th><th>Поставка</th><th></th></tr></thead>
+        <thead><tr><th style="width:66px;">Дата</th><th style="width:122px;">VIN</th><th style="width:96px;">Телефон</th><th style="width:62px;">Бренд</th><th style="width:62px;">Модель</th><th style="width:96px;">Артикул</th><th style="width:46px;">Фото</th><th style="width:190px;">Наименование</th><th style="width:104px;">Статус</th><th style="width:96px;">Поставка</th><th style="width:86px;"></th></tr></thead>
         <tbody id="wBody">
           ${records.map(r => {
             const si = warrantyStockMap[normKey(r.artikul)];
@@ -1644,7 +1658,7 @@ async function renderWarranty(){
               <td>${r.photo
                     ? `<img src="${r.photo}" class="w-photo-thumb" data-photo="${esc(r.id)}" alt="Фото детали">`
                     : "<span style='color:var(--text-faint)'>—</span>"}</td>
-              <td>${esc(r.name || "") || "<span style='color:var(--text-faint)'>—</span>"}</td>
+              <td><div class="w-name-cell" title="${esc(r.name || "")}">${esc(r.name || "") || "<span style='color:var(--text-faint)'>—</span>"}</div></td>
               <td>${statusHtml}${arrivedTxt}${issuedTxt}${delReqTxt}</td>
               <td>${deliveryHtml}</td>
               <td><div class="w-row-actions">${actions}</div></td>
@@ -1927,7 +1941,7 @@ async function renderWarranty(){
           </div>
         </td>
         <td><input type="text" class="w-e-name" value="${esc(rec.name || "")}"></td>
-        <td colspan="3">
+        <td colspan="4">
           <div class="w-edit-actions">
             <button class="btn small w-save-btn">Сохранить</button>
             <button class="btn secondary small w-cancel-btn">Отмена</button>
