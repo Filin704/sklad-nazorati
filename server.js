@@ -2,11 +2,40 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const compression = require('compression');
 const { MongoClient } = require('mongodb');
 const ingest = require('./ingest');
 const icons = require('./icons');
 
 const app = express();
+
+// Render (and most hosts) terminate TLS in front of the app, so the real client
+// IP only arrives in X-Forwarded-For. Without this every request would look
+// like it came from the proxy, which would make the login rate limit useless.
+app.set('trust proxy', 1);
+
+// Hide the framework signature and add a few conservative hardening headers.
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader('Content-Security-Policy',
+    "default-src 'self'; " +
+    "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; " +
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+    "font-src 'self' data: https://fonts.gstatic.com; " +
+    "img-src 'self' data: blob:; " +
+    "connect-src 'self'; " +
+    "object-src 'none'; base-uri 'self'; frame-ancestors 'self'");
+  next();
+});
+
+// HTML/CSS/JS/JSON shrink several times over with gzip, which matters a lot on
+// the mobile connections this app is mostly used from.
+app.use(compression());
+
 app.use(express.json({ limit: '15mb' }));
 
 // --- Storage layer ---------------------------------------------------------
@@ -21,13 +50,23 @@ let collection = null;
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'store.json');
 
+// Cached in memory: without this every single write re-read and re-parsed the
+// whole store file, which is a synchronous read on the request path.
+let fileStoreCache = null;
+
 function loadFileStore() {
-  try { return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); }
-  catch (e) { return {}; }
+  if (fileStoreCache) return fileStoreCache;
+  try { fileStoreCache = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); }
+  catch (e) { fileStoreCache = {}; }
+  return fileStoreCache;
 }
 function saveFileStore(store) {
+  fileStoreCache = store;
   fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(DATA_FILE, JSON.stringify(store));
+  // Write-then-rename, so a crash mid-write can never leave a truncated file.
+  const tmp = DATA_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(store));
+  fs.renameSync(tmp, DATA_FILE);
 }
 function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -106,6 +145,41 @@ async function kvListKeys(prefix) {
 const SESSION_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const sessions = new Map(); // token -> { login, expires }
 
+// --- Login brute-force guard ------------------------------------------------
+// After this many failed logins from one IP the account is closed to that IP
+// for the rest of the window. Kept in memory on purpose: it only has to slow an
+// attacker down, and it must never block a legitimate user after a restart.
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+// Deliberately generous: an office shares one public IP, so a low limit here
+// would lock out every colleague because of one person's typos.
+const LOGIN_MAX_FAILURES = 20;
+const loginFailures = new Map(); // ip -> { count, resetAt }
+
+function loginRateLimited(ip) {
+  const rec = loginFailures.get(ip);
+  if (!rec) return false;
+  if (rec.resetAt < Date.now()) { loginFailures.delete(ip); return false; }
+  return rec.count >= LOGIN_MAX_FAILURES;
+}
+
+function noteLoginFailure(ip) {
+  const now = Date.now();
+  const rec = loginFailures.get(ip);
+  if (!rec || rec.resetAt < now) {
+    loginFailures.set(ip, { count: 1, resetAt: now + LOGIN_WINDOW_MS });
+  } else {
+    rec.count++;
+  }
+  // Keep the map from growing without bound on a busy or hostile network.
+  if (loginFailures.size > 5000) {
+    for (const [k, v] of loginFailures) if (v.resetAt < now) loginFailures.delete(k);
+  }
+}
+
+function clearLoginFailures(ip) {
+  loginFailures.delete(ip);
+}
+
 function hashPassword(pw) {
   return crypto.createHash('sha256').update(String(pw)).digest('hex');
 }
@@ -169,8 +243,13 @@ setInterval(() => {
   for (const [t, s] of sessions) if (s.expires < now) sessions.delete(t);
 }, 60 * 60 * 1000);
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
   if (!AUTH_ENABLED) return res.json({ ok: true, login: 'guest', role: 'full', authDisabled: true });
+
+  // A shared office password is guessable if an attacker gets unlimited tries,
+  // so failures are counted per IP address.
+  const ip = req.ip || 'unknown';
+  const limited = loginRateLimited(ip);
 
   const login = String(req.body.login || '').trim().toLowerCase();
   const password = String(req.body.password || '');
@@ -181,7 +260,18 @@ app.post('/api/login', (req, res) => {
   const provided = hashPassword(password);
   const ok = user ? safeEqual(user.hash, provided) : false;
 
-  if (!ok) return res.status(401).json({ ok: false, error: 'Неверный логин или пароль' });
+  if (!ok) {
+    noteLoginFailure(ip);
+    if (limited) {
+      // Slow an attacker down, but never lock a colleague out: the correct
+      // password still gets through, it just waits a moment.
+      await new Promise(r => setTimeout(r, 300));
+      return res.status(429).json({ ok: false, error: 'Слишком много попыток входа. Попробуйте снова через 15 минут.' });
+    }
+    return res.status(401).json({ ok: false, error: 'Неверный логин или пароль' });
+  }
+
+  clearLoginFailures(ip);
 
   const token = createSession(login, user.role);
   res.setHeader('Set-Cookie',
@@ -341,11 +431,22 @@ app.get('/api/kv-batch', async (req, res) => {
 const AUDIT_KEY = '__audit_log__';
 const MAX_AUDIT_ENTRIES = 3000;
 
+// The log used to be read and re-parsed from the database on every single
+// write. It is now cached in memory and reloaded only after a restart.
+let auditLogCache = null;
+
+async function readAuditLog() {
+  if (auditLogCache) return auditLogCache;
+  const raw = await kvGet(AUDIT_KEY);
+  let log = [];
+  if (raw !== undefined) { try { log = JSON.parse(raw) || []; } catch (e) { log = []; } }
+  auditLogCache = log;
+  return log;
+}
+
 async function writeAudit(session, action, details) {
   try {
-    const raw = await kvGet(AUDIT_KEY);
-    let log = [];
-    if (raw !== undefined) { try { log = JSON.parse(raw) || []; } catch (e) { log = []; } }
+    const log = await readAuditLog();
 
     log.push({
       at: new Date().toISOString(),
@@ -354,7 +455,8 @@ async function writeAudit(session, action, details) {
       details: String(details || '').slice(0, 300)
     });
 
-    if (log.length > MAX_AUDIT_ENTRIES) log = log.slice(-MAX_AUDIT_ENTRIES);
+    if (log.length > MAX_AUDIT_ENTRIES) log.splice(0, log.length - MAX_AUDIT_ENTRIES);
+    auditLogCache = log;
     await kvSet(AUDIT_KEY, JSON.stringify(log));
   } catch (e) {
     // Logging must never break the operation the user actually asked for.
@@ -364,15 +466,14 @@ async function writeAudit(session, action, details) {
 
 app.get('/api/audit', requireAdmin, async (req, res) => {
   try {
-    const raw = await kvGet(AUDIT_KEY);
-    let log = [];
-    if (raw !== undefined) { try { log = JSON.parse(raw) || []; } catch (e) { log = []; } }
+    const log = await readAuditLog();
     res.json({ entries: log.slice().reverse() });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.delete('/api/audit', requireAdmin, async (req, res) => {
   try {
+    auditLogCache = [];
     await kvSet(AUDIT_KEY, JSON.stringify([]));
     await writeAudit(req.session, 'audit_cleared', 'Журнал очищен');
     res.json({ ok: true });
@@ -678,7 +779,8 @@ app.get('/icons/:size.png', (req, res) => {
 // fetched live, or the app would show yesterday's numbers.
 app.get('/sw.js', (req, res) => {
   res.type('application/javascript').send(`
-const CACHE = 'sklad-shell-v1';
+// Bump this when the shell changes, so old copies are dropped on activate.
+const CACHE = 'sklad-shell-v2';
 
 self.addEventListener('install', (e) => {
   self.skipWaiting();
@@ -713,20 +815,86 @@ self.addEventListener('fetch', (e) => {
   `);
 });
 
-// --- Static frontend ------------------------------------------------------
+// --- API 404 ---------------------------------------------------------------
+// An unknown /api/* path must answer with JSON, not with the HTML shell: the
+// frontend parses JSON and would otherwise report a confusing syntax error.
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: 'not_found', path: req.originalUrl });
+});
 
-app.use(express.static(__dirname));
+// --- Static frontend ------------------------------------------------------
+// Only public/ is served. Serving the repository root exposed server.js,
+// package.json, the whole .git history and the data file to anyone who guessed
+// a filename — a real leak, not a theoretical one.
+const PUBLIC_DIR = path.join(__dirname, 'public');
+
+// Version derived from the asset contents, so a redeploy busts the browser
+// cache without anyone bumping a number by hand.
+const ASSET_VERSION = (() => {
+  try {
+    const h = crypto.createHash('sha256');
+    ['app.js', 'app.css'].forEach(f => h.update(fs.readFileSync(path.join(PUBLIC_DIR, f))));
+    return h.digest('hex').slice(0, 10);
+  } catch (e) {
+    return '1';
+  }
+})();
+
+let htmlShell = null;
+function renderShell() {
+  if (htmlShell === null) {
+    const raw = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
+    htmlShell = raw.split('__V__').join(ASSET_VERSION);
+  }
+  return htmlShell;
+}
+
+app.use(express.static(PUBLIC_DIR, {
+  index: false,        // the shell is rendered below so __V__ can be filled in
+  dotfiles: 'deny',
+  maxAge: '1y',        // assets are addressed with a content version query
+  immutable: true,
+  setHeaders(res, filePath) {
+    if (filePath.endsWith('index.html')) res.setHeader('Cache-Control', 'no-cache');
+  }
+}));
+
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
+  // A missing asset should be a real 404, not the HTML shell wearing a .js name.
+  if (path.extname(req.path)) return res.status(404).type('text/plain').send('Not found');
+  // Dotfiles (.git/config, .env...) are never part of the app shell.
+  if (req.path.split('/').some(seg => seg.startsWith('.'))) {
+    return res.status(404).type('text/plain').send('Not found');
+  }
+  res.setHeader('Cache-Control', 'no-cache');
+  res.type('html').send(renderShell());
 });
 
 const PORT = process.env.PORT || 3000;
 
+let server = null;
+
+function start() {
+  server = app.listen(PORT, () => {
+    console.log('Сервер запущен: http://localhost:' + PORT);
+    console.log('Версия фронтенда: ' + ASSET_VERSION);
+  });
+}
+
 initDb()
-  .then(() => {
-    app.listen(PORT, () => console.log('Сервер запущен: http://localhost:' + PORT));
-  })
+  .then(() => start())
   .catch(err => {
     console.error('Не удалось подключиться к MongoDB, запускаю без базы:', err.message);
-    app.listen(PORT, () => console.log('Сервер запущен (без базы): http://localhost:' + PORT));
+    start();
   });
+
+// Render sends SIGTERM on every redeploy. Closing the listener first lets
+// in-flight requests finish instead of cutting them off mid-write.
+function shutdown(signal) {
+  console.log('Получен ' + signal + ', останавливаюсь...');
+  if (!server) process.exit(0);
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(1), 10000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

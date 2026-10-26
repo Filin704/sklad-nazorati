@@ -1,72 +1,97 @@
-# Sklad nazorati — Render.com'ga joylash qo'llanmasi
+# Sklad nazorati
 
-Bu loyiha oddiy Node.js (Express) server + statik frontend'dan iborat. Render.com bepul
-tarifida ishga tushirish uchun quyidagi qadamlarni bajaring.
+Контроль складских остатков запчастей: распределение по брендам, минимальные
+количества, расход, гарантийные заявки, уведомления в Telegram.
 
-## 1-qadam: Loyihani GitHub'ga yuklash
+## Стек и структура
 
-Render.com kodni GitHub repozitoriyasidan oladi, shuning uchun avval shu loyihani
-GitHub'ga yuklashingiz kerak.
-
-1. https://github.com saytida yangi (bo'sh) repozitoriya yarating, masalan `sklad-nazorati`.
-2. Kompyuteringizda ushbu papkani ochib, quyidagi buyruqlarni bajaring:
-
-```bash
-cd sklad-sayt
-git init
-git add .
-git commit -m "Birinchi versiya"
-git branch -M main
-git remote add origin https://github.com/SIZNING_USERNAME/sklad-nazorati.git
-git push -u origin main
+```
+server.js          Express-сервер: API, авторизация, раздача фронтенда
+ingest.js          Разбор Excel/CSV и применение загрузки (общий для web и auto)
+icons.js           PNG-иконки PWA в base64 (отдаются как /icons/*.png)
+public/index.html  Оболочка приложения (4 КБ)
+public/app.css     Все стили
+public/app.js      Вся клиентская логика
+public/brands/     Логотипы брендов для сайдбара
 ```
 
-(`SIZNING_USERNAME` o'rniga o'z GitHub foydalanuvchi nomingizni yozing.)
+Раньше фронтенд был одним файлом `index.html` на 512 КБ: в нём дважды лежал
+base64-логотип по 150 КБ, а рядом с ним — CSS и вся логика. Теперь это отдельные
+файлы, которые кешируются браузером по отдельности.
 
-## 2-qadam: Render.com'da hisob ochish va loyihani ulash
-
-1. https://render.com saytiga kirib, GitHub akkauntingiz orqali ro'yxatdan o'ting.
-2. Dashboard'da **"New +"** → **"Web Service"** tugmasini bosing.
-3. GitHub repozitoriyangizni (`sklad-nazorati`) tanlang va **"Connect"** bosing.
-4. Quyidagi sozlamalarni tekshiring (odatda avtomatik to'g'ri aniqlanadi, chunki loyihada
-   `render.yaml` fayli bor):
-   - **Name**: xohlagan nom (masalan `sklad-nazorati`) — sayt manzili shu nomga bog'liq
-     bo'ladi: `https://sklad-nazorati.onrender.com`
-   - **Build Command**: `npm install`
-   - **Start Command**: `npm start`
-   - **Plan**: **Free**
-5. **"Create Web Service"** tugmasini bosing. Bir necha daqiqada sayt tayyor bo'ladi va
-   sizga havola beriladi (masalan `https://sklad-nazorati.onrender.com`).
-
-Shu havolani xodimlaringiz bilan baham ko'ring — barchasi shu bitta manzil orqali kirib,
-bir xil ma'lumotni ko'radi va yangilaydi.
-
-## Muhim eslatma: bepul tarifning ikkita cheklovi
-
-1. **Uxlab qolish**: bepul tarifdagi server 15 daqiqa faoliyatsizlikdan so'ng "uxlaydi" va
-   keyingi kirishda uyg'onishi uchun ~30-50 soniya vaqt ketadi. Bu normal holat, faqat
-   birinchi kirish biroz sekin bo'lishi mumkin.
-2. **Ma'lumotlar saqlanishi (muhimroq)**: hozirgi holatda ma'lumotlar oddiy faylda
-   (`data/store.json`) saqlanadi. Render'ning bepul tarifidagi disk **doimiy emas** — agar
-   server qayta joylansa (kodni yangilasangiz) yoki uzoq vaqt uxlab, qayta ishga tushsa,
-   bu fayl **o'chib ketishi mumkin** va barcha ma'lumot yo'qoladi.
-
-   Buning oldini olish uchun ikkita variant bor:
-   - **Oddiy yechim**: Render'da kichik pullik "Persistent Disk" qo'shish (odatda oyiga
-     bir necha dollar) — `data/` papkasini doimiy diskka bog'lab qo'yish kerak bo'ladi.
-   - **Tavsiya etiladigan yechim**: bepul tashqi ma'lumotlar bazasidan foydalanish,
-     masalan **MongoDB Atlas** (doimiy bepul 512 MB) yoki **Supabase** (bepul Postgres).
-     Bu holda `server.js` faylidagi saqlash qismini o'sha bazaga ulash kerak bo'ladi.
-
-   Agar buni ham men orqali qilishni xohlasangiz — ayting, `server.js`ni tanlagan bazangizga
-   moslab beraman.
-
-## Mahalliy kompyuterda sinab ko'rish
+## Быстрый старт
 
 ```bash
-cd sklad-sayt
 npm install
-npm start
+npm start          # http://localhost:3000
 ```
 
-Keyin brauzerda `http://localhost:3000` manzilini oching.
+Без переменных окружения приложение работает «на открытом доступе» и хранит
+данные в `data/store.json` (файл теряется при перезапуске контейнера).
+
+## Переменные окружения
+
+| Переменная | Назначение |
+|---|---|
+| `PORT` | Порт (по умолчанию 3000) |
+| `MONGODB_URI` | Строка подключения MongoDB Atlas. Без неё — временное файловое хранилище |
+| `APP_USERS` | `login:пароль,login:пароль:admin,login:пароль:warranty`. Без неё вход отключён |
+| `INGEST_TOKEN` | Токен для авто-загрузки через `POST /api/ingest` |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Уведомления о новых позициях ниже минимума |
+
+Роли: без суффикса — полный доступ, `admin` — полный доступ + резервные копии
+и журнал изменений, `warranty` — только гарантийные заявки.
+
+## Безопасность
+
+- Раздаётся **только** папка `public/`. Раньше отдавался корень проекта, из-за
+  чего по прямым ссылкам были доступны `server.js`, `package.json`, вся история
+  `.git` и файл данных.
+- Пароли сравниваются по SHA-256 с постоянным временем отклика.
+- Сессии — HttpOnly-cookie, 6 часов, `SameSite=Lax`.
+- Ограничение попыток входа: 20 неудач с одного IP за 15 минут (общий IP офиса
+  учитывается: верный пароль проходит даже при сработавшем лимите).
+- Заголовки `CSP`, `X-Content-Type-Options`, `X-Frame-Options`,
+  `Referrer-Policy`, `Permissions-Policy`; подпись `X-Powered-By` убрана.
+- Доступ к данным проверяется на сервере по роли, а не только скрытием кнопок.
+
+## Производительность
+
+| Что | Было | Стало |
+|---|---|---|
+| Оболочка (HTML) | 512 КБ | 4 КБ (1.6 КБ в gzip) |
+| JS + CSS | внутри HTML | 155 КБ + 35 КБ, кеш на год |
+| Повторный вход | 512 КБ каждый раз | только 4 КБ HTML |
+| Сжатие | нет | gzip (≈4×) |
+| Версии ассетов | нет | хеш содержимого подставляется автоматически |
+
+Дополнительно: один батч-запрос вместо запроса на каждый бренд, поиск по
+артикулу через уже загруженный кеш, карта остатков строится один раз за
+загрузку, журнал изменений читается из памяти, файловое хранилище кешируется
+и пишется атомарно (временный файл + переименование).
+
+## Deploy на Render.com
+
+1. Запушьте репозиторий на GitHub.
+2. На Render: **New +** → **Web Service** → выберите репозиторий.
+3. Build Command — `npm install`, Start Command — `npm start`, Plan — Free.
+   Значения уже описаны в `render.yaml`.
+4. В **Environment** добавьте `MONGODB_URI` (MongoDB Atlas, бесплатный кластер)
+   и `APP_USERS` — иначе данные будут теряться, а сайт будет открыт всем.
+5. Health-check: `/api/health`.
+
+### Важно про бесплатный тариф
+
+- Сервер «засыпает» после 15 минут простоя, первое открытие — 30–50 секунд.
+- Диск эфемерный: без `MONGODB_URI` данные пропадут при каждом редеплое.
+  Atlas (512 МБ бесплатно) или Supabase решают это.
+
+## Локальная проверка перед пушем
+
+```bash
+npm start
+# в другом терминале:
+curl http://localhost:3000/api/health          # {"ok":true,...}
+curl -H "Accept-Encoding: gzip" -o /dev/null -w "%{size_download}\n" http://localhost:3000/
+```
+

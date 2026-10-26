@@ -6,3 +6,15 @@ services:
     buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /api/health
+    envVars:
+      # Values are entered in the Render dashboard, never committed.
+      - key: MONGODB_URI
+        sync: false
+      - key: APP_USERS
+        sync: false
+      - key: INGEST_TOKEN
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
