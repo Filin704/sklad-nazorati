@@ -23,7 +23,7 @@ app.use((req, res, next) => {
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   res.setHeader('Content-Security-Policy',
     "default-src 'self'; " +
-    "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; " +
+    "script-src 'self' 'unsafe-inline'; " +
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
     "font-src 'self' data: https://fonts.gstatic.com; " +
     "img-src 'self' data: blob:; " +
@@ -833,7 +833,9 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const ASSET_VERSION = (() => {
   try {
     const h = crypto.createHash('sha256');
-    ['app.js', 'app.css'].forEach(f => h.update(fs.readFileSync(path.join(PUBLIC_DIR, f))));
+    ['app.js', 'app.css',
+     'vendor/xlsx.full.min.js', 'vendor/chart.umd.js']
+      .forEach(f => h.update(fs.readFileSync(path.join(PUBLIC_DIR, f))));
     return h.digest('hex').slice(0, 10);
   } catch (e) {
     return '1';

@@ -1981,7 +1981,18 @@ async function searchArtikul(query){
   });
 }
 
+// The Excel library is a separate script. If it ever fails to load, every call
+// into it throws a ReferenceError that nothing catches, so the button appears
+// to do nothing at all. Checking first turns that into a message the user can
+// act on.
+function excelReady(){
+  if(typeof XLSX !== "undefined" && XLSX && XLSX.utils) return true;
+  showToast("Библиотека Excel не загрузилась. Обновите страницу (Ctrl+F5); если не поможет — сообщите администратору.", "error");
+  return false;
+}
+
 function handleFile(file){
+  if(!excelReady()) return;
   const reader = new FileReader();
   reader.onload = (e) => {
     try{
@@ -3061,6 +3072,7 @@ function formatSum(n){
 // Exports the brand's full tracked stock list to an .xlsx file, downloaded directly
 // in the browser (no server involved) using the SheetJS library already loaded on the page.
 function exportBrandStock(brand, items){
+  if(!excelReady()) return;
   if(!items || items.length === 0){ showToast("Нет данных для экспорта — список пуст.", "warning"); return; }
 
   // A stock listing should only contain what's actually on the shelf, so items
@@ -3084,6 +3096,7 @@ function exportBrandStock(brand, items){
 
 // Exports only the items currently below their minimum quantity for this brand.
 function exportBrandShortages(brand, shortages){
+  if(!excelReady()) return;
   if(!shortages || shortages.length === 0){ showToast("Нехватки нет — экспортировать нечего.", "info"); return; }
   const data = shortages.map(s => ({
     "Артикул": s.artikul,

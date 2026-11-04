@@ -13,8 +13,11 @@
 <link rel="apple-touch-icon" href="/icons/180.png">
 <title>Контроль склада</title>
 <link rel="icon" type="image/png" sizes="192x192" href="/icons/192.png">
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<!-- Served from this site, not a CDN: an outside script host can be blocked by a
+     network or stop serving a version, and when it does the Excel buttons fail
+     silently. Local copies also keep the app working offline as an installed PWA. -->
+<script defer src="/vendor/xlsx.full.min.js?v=__V__"></script>
+<script defer src="/vendor/chart.umd.js?v=__V__"></script>
 <link rel="stylesheet" href="/app.css?v=__V__">
 </head>
 <body>
